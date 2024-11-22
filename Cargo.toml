@@ -1,0 +1,15 @@
+[package]
+name = "amuseing"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.15.3"
+ringbuf = "0.4.7"
+slint = "1.8.0"
+symphonia = "0.5.4"
+symphonia-bundle-mp3 = "0.5.4"
+thiserror = "2.0.3"
+
+[build-dependencies]
+slint-build = "1.8.0"

@@ -1,0 +1,49 @@
+import { Button, ListView } from "std-widgets.slint";
+
+component PlaylistSelection inherits Rectangle {
+    preferred-height: 100%;
+    background: red;
+}
+
+component SongComponent inherits Rectangle {
+    background: #3d3d3d;
+    in-out property <string> title <=> text.text;
+    HorizontalLayout {
+        play-button-rect := Rectangle {
+            width: self.height;
+            Text {
+                text: "B";
+            }
+        }
+
+        text := Text {
+            width: 100%;
+            vertical-alignment: center;
+            height: root.height;
+        }
+    }
+}
+
+export struct SongModel {
+    id: int,
+    title: string,
+    duration: int,
+}
+
+export component AppWindow inherits Window {
+    preferred-height: 1080px / 2;
+    preferred-width: 1920px / 2;
+    in-out property <[SongModel]> songs;
+    HorizontalLayout {
+        PlaylistSelection {
+            width: parent.width * 0.35;
+        }
+
+        ListView {
+            for i in 20: SongComponent {
+                height: 10%;
+                title: "Song \{i}";
+            }
+        }
+    }
+}
