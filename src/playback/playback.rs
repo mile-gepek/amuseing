@@ -4,10 +4,10 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::sync::mpsc::{self, Sender};
+use std::sync::{mpsc, MutexGuard};
 use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
 use std::{fs, path::PathBuf, time::Duration};
+use std::{io, thread};
 use symphonia::core::audio::{AudioBuffer, Signal};
 use symphonia::core::units;
 use symphonia::core::{
@@ -59,6 +59,7 @@ impl Song {
 
     /// Create a new Song from a mp3 file at `path`, and automatically calculate the duration from it.
     pub fn from_path(title: String, path: PathBuf) -> SymphoniaResult<Song> {
+        let path = path.canonicalize()?;
         let reader = Self::reader(&path)?;
         let track = reader
             .default_track()
@@ -99,6 +100,35 @@ impl Into<SongModel> for Song {
             duration: self.duration.as_secs() as i32,
             title: SharedString::from(&self.title),
         }
+    }
+}
+
+pub struct Playlist {
+    path: PathBuf,
+    title: String,
+    icon_path: PathBuf,
+}
+
+impl Playlist {
+    pub fn new(path: PathBuf, title: String, icon_path: PathBuf) -> io::Result<Self> {
+        Ok(Self {
+            path: path.canonicalize()?,
+            title,
+            icon_path,
+        })
+    }
+
+    pub fn songs(&self) -> std::io::Result<Vec<Song>> {
+        Ok(self.path
+            .read_dir()?
+            .filter_map(|f| {
+                let path = f.ok()?.path();
+                if path.extension()? == "mp3" {
+                    return Some(Song::from_path("title".to_string(), path).ok()?);
+                }
+                None
+            })
+            .collect())
     }
 }
 
@@ -202,7 +232,7 @@ impl SongQueue {
 //     }
 // }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum PlayerState {
     Paused,
     Playing,
@@ -237,7 +267,7 @@ pub struct Player {
     queue: Arc<Mutex<SongQueue>>,
     state: Arc<RwLock<PlayerState>>,
     /// None if the player hasn't started yes, the player's state is `PlayerState::NotStarted` in this case
-    sender: Option<Sender<PlayerMessage>>,
+    sender: Option<mpsc::Sender<PlayerMessage>>,
     time_playing: Arc<RwLock<Duration>>,
     volume: Arc<RwLock<Volume>>,
 }
@@ -253,10 +283,27 @@ impl Player {
         }
     }
 
+    // TODO: fix this ugly mess
+    pub fn with_queue(queue: SongQueue, volume: Volume) -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(queue)),
+            ..Player::new(volume)
+        }
+    }
+
+    pub fn queue_mut(&self) -> MutexGuard<SongQueue> {
+        self.queue.lock().unwrap()
+    }
+
     /// If available, return a cloned version of the Song that's currently playing.
     pub fn current(&self) -> Option<Song> {
         let queue_lock = self.queue.lock().unwrap();
         queue_lock.current()
+    }
+
+    pub fn is_paused(&self) -> bool {
+        let state = *self.state.read().unwrap();
+        matches!(state, PlayerState::Paused)
     }
 
     /// Send a message to the audio playing thread.
@@ -268,7 +315,7 @@ impl Player {
     }
 
     /// Send a message to the audio thread to quit playing entirely.
-    /// 
+    ///
     /// NOTE: the player's state is NOT updated to Finished by this call, but by the audio thread
     pub fn quit(&self) -> bool {
         self.send_message(PlayerMessage::Quit)
@@ -282,14 +329,14 @@ impl Player {
     }
 
     /// Send a message to the audio thread to pause playback.
-    /// 
+    ///
     /// NOTE: the player's state is NOT updated to Paused by this call, but by the audio thread
     pub fn pause(&self) -> bool {
         self.send_message(PlayerMessage::Pause)
     }
 
     /// Send a message to the audio thread to resume playback.
-    /// 
+    ///
     /// NOTE: the player's state is NOT updated to Playing by this call, but by the audio thread
     pub fn resume(&self) -> bool {
         self.send_message(PlayerMessage::Resume)
@@ -310,50 +357,13 @@ impl Player {
         let time_playing = self.time_playing.clone();
         let volume = self.volume.clone();
 
-        let (tx, rx) = mpsc::channel::<PlayerMessage>();
-        self.sender = Some(tx);
-        let (device, stream_config) = init_cpal();
-        let stream_channels = stream_config.channels() as usize;
-        let (mut producer, consumer) = {
-            let buf: HeapRb<f64> = HeapRb::new(32 * 1024);
-            buf.split()
-        };
-        let audio_stream = match stream_config.sample_format() {
-            SampleFormat::I8 => {
-                create_stream::<u8>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::I16 => {
-                create_stream::<i16>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::I32 => {
-                create_stream::<i32>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::I64 => {
-                create_stream::<i64>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::U8 => {
-                create_stream::<u8>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::U16 => {
-                create_stream::<u16>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::U32 => {
-                create_stream::<u32>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::U64 => {
-                create_stream::<u64>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::F32 => {
-                create_stream::<f32>(device, &stream_config.into(), consumer, volume)
-            }
-            SampleFormat::F64 => {
-                create_stream::<f64>(device, &stream_config.into(), consumer, volume)
-            }
-            sample_format => panic!("Unsupported sample format: '{sample_format}'"),
-        }
-        .unwrap();
-        audio_stream.play().unwrap();
+        let (control_tx, control_rx) = mpsc::channel::<PlayerMessage>();
+        self.sender = Some(control_tx.clone());
+
         thread::spawn(move || {
+            let (mut stream, mut stream_rx, mut stream_channels, mut producer) =
+                stream_setup(volume.clone());
+            stream.play().unwrap();
             'main_loop: loop {
                 let song = {
                     let mut queue_lock = queue.lock().unwrap();
@@ -379,7 +389,21 @@ impl Player {
                 let mut source_exhausted = false;
                 let mut sample_deque: VecDeque<SampleType> = VecDeque::new();
                 while !source_exhausted || !producer.is_empty() {
-                    match rx.recv() {
+                    match stream_rx.try_recv() {
+                        // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
+                        Ok(e) => match e {
+                            // I know the match isn't needed if I only match _ but I'll keep it if I need to do different stuff depending on branch
+                            _ => {
+                                let _ = control_tx.send(PlayerMessage::Pause);
+                                (stream, stream_rx, stream_channels, producer) =
+                                    stream_setup(volume.clone());
+                                println!("Got stream error: {e}");
+                            }
+                        },
+                        Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
+                        _ => (),
+                    }
+                    match control_rx.try_recv() {
                         Ok(message) => match message {
                             PlayerMessage::Quit => break 'main_loop,
                             PlayerMessage::Stop => break,
@@ -387,12 +411,14 @@ impl Player {
                                 let mut state_lock = player_state.write().unwrap();
                                 *state_lock = PlayerState::Paused;
                                 playing = false;
+                                // stream.pause().unwrap();
                                 // We can slow down the thread a bit if the player is paused
                                 thread::sleep(Duration::from_millis(100));
                             }
                             PlayerMessage::Resume => {
                                 let mut state_lock = player_state.write().unwrap();
                                 *state_lock = PlayerState::Playing;
+                                // stream.play().unwrap();
                                 playing = true;
                             }
                             PlayerMessage::Seek(dur) => {
@@ -418,7 +444,8 @@ impl Player {
                             }
                         },
                         // Break if the channel is disconnected, because this means the sender was dropped
-                        Err(mpsc::RecvError) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
+                        _ => (),
                     }
                     if !playing {
                         continue;
@@ -548,6 +575,7 @@ fn write_audio<T: Sample>(
 fn create_stream<T>(
     device: cpal::Device,
     stream_config: &cpal::StreamConfig,
+    stream_tx: mpsc::Sender<cpal::StreamError>,
     mut consumer: (impl Consumer<Item = SampleType> + std::marker::Send + 'static),
     volume: Arc<RwLock<Volume>>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
@@ -558,6 +586,62 @@ where
         write_audio(data, &mut consumer, &volume, cbinfo)
     };
     // TODO: set up mpsc between Player thread and cpal thread to get new audio device on disconnect, or otherwise catch other errors
-    let err_fn = |e| eprintln!("Stream error: {e}");
+    let err_fn = move |e| {
+        let _ = stream_tx.send(e);
+    };
     device.build_output_stream(stream_config, callback, err_fn, None)
+}
+
+fn stream_setup(
+    volume: Arc<RwLock<Volume>>,
+) -> (
+    cpal::Stream,
+    mpsc::Receiver<cpal::StreamError>,
+    usize,
+    impl Producer<Item = SampleType>,
+) {
+    let (device, stream_config) = init_cpal();
+    let stream_channels = stream_config.channels() as usize;
+    let (producer, consumer) = {
+        let buf: HeapRb<f64> = HeapRb::new(32 * 1024);
+        buf.split()
+    };
+    let (stream_tx, stream_rx) = mpsc::channel::<cpal::StreamError>();
+    let stream = match stream_config.sample_format() {
+        SampleFormat::I8 => {
+            create_stream::<i8>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::I16 => {
+            create_stream::<i16>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::I32 => {
+            create_stream::<i32>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::I64 => {
+            create_stream::<i64>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::U8 => {
+            create_stream::<u8>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::U16 => {
+            create_stream::<u16>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::U32 => {
+            create_stream::<u32>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::U64 => {
+            create_stream::<u64>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::F32 => {
+            create_stream::<f32>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+        SampleFormat::F64 => {
+            create_stream::<f64>(device, &stream_config.into(), stream_tx, consumer, volume)
+        }
+
+        sample_format => panic!("Unsupported sample format: '{sample_format}'"),
+    }
+    .unwrap();
+    stream.play().unwrap();
+    (stream, stream_rx, stream_channels, producer)
 }

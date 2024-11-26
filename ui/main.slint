@@ -24,6 +24,33 @@ component SongComponent inherits Rectangle {
     }
 }
 
+export global PlayerControls {
+    pure callback is-paused() -> bool;
+
+    // toggle the current state, this also changes is-paused
+    callback pause-play();
+
+    // first arg is playlist id, second is song id
+    callback start-song(int, int);
+}
+
+component PlayerControlsComponent inherits Rectangle {
+    background: green;
+    button := Button {
+        clicked => {
+            PlayerControls.pause-play();
+        }
+    }
+    states [
+        paused when PlayerControls.is-paused(): {
+            button.text: "Paused";
+        }
+        playing: {
+            button.text: "Playing";
+        }
+    ]
+}
+
 export struct SongModel {
     id: int,
     title: string,
@@ -34,16 +61,20 @@ export component AppWindow inherits Window {
     preferred-height: 1080px / 2;
     preferred-width: 1920px / 2;
     in-out property <[SongModel]> songs;
-    HorizontalLayout {
-        PlaylistSelection {
-            width: parent.width * 0.35;
-        }
+    VerticalLayout {
+        HorizontalLayout {
+            PlaylistSelection {
+                width: parent.width * 0.35;
+            }
 
-        ListView {
-            for i in 20: SongComponent {
-                height: 10%;
-                title: "Song \{i}";
+            ListView {
+                for i in 20: SongComponent {
+                    height: 10%;
+                    title: "Song \{i}";
+                }
             }
         }
+
+        PlayerControlsComponent { }
     }
 }
