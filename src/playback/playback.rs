@@ -20,23 +20,16 @@ use symphonia_bundle_mp3::{MpaDecoder, MpaReader};
 
 type SampleType = f64;
 
-slint::include_modules!();
-use slint::SharedString;
-
 use crate::errors::{OutOfBoundsError, PlayerRunningError, SeekError};
+use crate::queue::{Queue, RepeatMode};
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum RepeatMode {
-    Off,
-    Single,
-    All,
-}
-
-/// Represents a song from a `SongQueue`.
+/// Represents a song from a [`Player`]s queue.
 ///
-/// Songs are played from a `Player`, which uses a Symphonia reader and decoder from `Song::reader_decoder` to read the samples from the file.
-///
-/// Songs should be created with `Song::from_path`.
+/// Songs are played from a [`Player`], which uses a Symphonia reader and decoder read the samples from the file.
+/// 
+/// Songs should be created with [`from_path`].
+/// 
+/// [`from_path`]: Self::from_path
 ///
 /// The duration of the song is automatically calculated when created.
 #[derive(Clone, Debug)]
@@ -55,6 +48,18 @@ impl Song {
             path,
             duration,
         }
+    }
+
+    pub fn id(&self) -> &u32 {
+        &self.id
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn duration(&self) -> &Duration {
+        &self.duration
     }
 
     /// Create a new Song from a mp3 file at `path`, and automatically calculate the duration from it.
@@ -77,12 +82,14 @@ impl Song {
     fn reader(path: &PathBuf) -> SymphoniaResult<MpaReader> {
         let file = fs::File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut reader_options = FormatOptions::default();
-        reader_options.enable_gapless = true;
+        let reader_options = FormatOptions {
+            enable_gapless: true,
+            ..Default::default()
+        };
         MpaReader::try_new(mss, &reader_options)
     }
 
-    /// Try to get a reader and decoder for use in `Player` to get audio samples
+    /// Try to get a reader and decoder for use in player to get audio samples
     fn reader_decoder(&self) -> SymphoniaResult<(MpaReader, MpaDecoder)> {
         let reader = Self::reader(&self.path)?;
         let track = reader
@@ -90,16 +97,6 @@ impl Song {
             .expect("Every mp3 file should have a track");
         let decoder = MpaDecoder::try_new(&track.codec_params, &Default::default())?;
         Ok((reader, decoder))
-    }
-}
-
-impl Into<SongModel> for Song {
-    fn into(self) -> SongModel {
-        SongModel {
-            id: self.id as i32,
-            duration: self.duration.as_secs() as i32,
-            title: SharedString::from(&self.title),
-        }
     }
 }
 
@@ -119,118 +116,19 @@ impl Playlist {
     }
 
     pub fn songs(&self) -> std::io::Result<Vec<Song>> {
-        Ok(self.path
+        Ok(self
+            .path
             .read_dir()?
             .filter_map(|f| {
                 let path = f.ok()?.path();
                 if path.extension()? == "mp3" {
-                    return Some(Song::from_path("title".to_string(), path).ok()?);
+                    return Song::from_path("title".to_string(), path).ok();
                 }
                 None
             })
             .collect())
     }
 }
-
-#[derive(Clone, Debug)]
-pub struct SongQueue {
-    pub songs: Vec<Song>,
-    index: usize,
-    pub repeat_mode: RepeatMode,
-    /// Used for proper iteration after skipping/jumping, and initial `next` call
-    has_advanced: bool,
-}
-
-impl SongQueue {
-    pub fn new(repeat_mode: RepeatMode) -> Self {
-        Self {
-            songs: Vec::new(),
-            index: 0,
-            repeat_mode,
-            has_advanced: false,
-        }
-    }
-
-    pub fn next(&mut self) -> Option<&Song> {
-        if self.songs.is_empty() {
-            return None;
-        }
-        if self.repeat_mode != RepeatMode::Single && self.has_advanced == true {
-            if self.index < self.songs.len() - 1 {
-                self.index += 1;
-            } else if self.repeat_mode == RepeatMode::All {
-                self.index = (self.index + 1) % self.songs.len();
-            }
-        }
-        self.has_advanced = true;
-        self.songs.get(self.index)
-    }
-
-    pub fn current(&self) -> Option<Song> {
-        self.songs.get(self.index).cloned()
-    }
-
-    /// Jump to index `n` in the queue
-    ///
-    /// Ensures the next item is at index `n`
-    pub fn jump(&mut self, new_index: usize) -> Result<(), OutOfBoundsError<usize>> {
-        if new_index > self.songs.len() {
-            return Err(OutOfBoundsError::High {
-                value: new_index,
-                max: self.songs.len(),
-            });
-        }
-        self.has_advanced = false;
-        self.index = new_index;
-        Ok(())
-    }
-
-    /// Skip n items forward, ensures the next item is `n` ahead;
-    ///
-    /// If the repeat mode is Off, skipping beyond the end of the queue will set the index to the length of the queue, otherwise wrap around to the beginning
-    pub fn skip(&mut self, n: usize) {
-        let new_index = if !self.songs.is_empty()
-            || (self.songs.len() - self.index) > n && self.repeat_mode == RepeatMode::Off
-        {
-            self.songs.len()
-        } else {
-            (self.index + n) % self.songs.len()
-        };
-        self.jump(new_index)
-            .expect("Calculated jump from skip shouldn't fail");
-    }
-
-    /// Rewind n items, ensures the next item is `n` behind the current item
-    pub fn rewind(&mut self, n: usize) {
-        let new_index = if self.songs.is_empty() {
-            0
-        } else {
-            if n <= self.index {
-                self.index - n
-            } else {
-                self.songs.len() - (self.index - n)
-            }
-        };
-        self.jump(new_index)
-            .expect("Calculated jump from rewind shouldn't fail");
-    }
-}
-
-// Do I make songs pub or a getter or deref??????????
-
-// impl Deref for SongQueue {
-//     type Target = Vec<Song>;
-
-//     fn deref(&self) -> &Self::Target {
-//         &self.songs
-//     }
-// }
-
-// impl DerefMut for SongQueue {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.songs
-//     }
-// }
 
 #[derive(Copy, Clone, Debug)]
 pub enum PlayerState {
@@ -248,34 +146,56 @@ pub enum PlayerMessage {
     Quit,
 }
 
-#[derive(Debug)]
-pub struct Volume(pub f64);
+#[derive(Copy, Clone, Debug)]
+pub struct Volume {
+    percent: f64,
+    multiplier: f64,
+}
 
 impl Volume {
+    pub fn percent(&self) -> &f64 {
+        &self.percent
+    }
+
+    /// Same as [`from_percent`], but fails when percentage is outside of the f32 range 0..1.
+    /// 
+    /// [`from_percent`]: Self::from_percent
+    pub fn from_percent_checked(percent: f64) -> Result<Self, OutOfBoundsError<f64>> {
+        if !(percent > 0. && percent < 1.) {
+            return Err(OutOfBoundsError::range(percent, 0., 1.));
+        }
+        Ok(Self::from_percent(percent))
+    }
+
     /// Calculates the sample multiplier depending on a percentage to adjust for human hearing.
     ///
-    /// The curve is: `(e^(B*percent) - 1) / e^B`, where B is 7.0.
-    pub fn from_percentage(percent: f64) -> Self {
+    /// The curve is: `(e^(B*percent) - 1) / (e^B - 1)`, where B is 7.0.
+    /// Why? Because.
+    pub fn from_percent(percent: f64) -> Self {
         const B: f64 = 7.0;
-        let volume = ((B * percent).exp() - 1.) / B.exp();
-        Self(volume)
+        let multiplier = ((B * percent).exp() - 1.) / (B.exp() - 1.);
+        Self {
+            percent,
+            multiplier,
+        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Player {
-    queue: Arc<Mutex<SongQueue>>,
+    queue: Arc<Mutex<Queue<Song>>>,
     state: Arc<RwLock<PlayerState>>,
-    /// None if the player hasn't started yes, the player's state is `PlayerState::NotStarted` in this case
+    /// None if the player hasn't started yes, the player's state is [`PlayerState::NotStarted`] in this case
     sender: Option<mpsc::Sender<PlayerMessage>>,
     time_playing: Arc<RwLock<Duration>>,
     volume: Arc<RwLock<Volume>>,
 }
 
 impl Player {
+    /// Create a new player with the given volume.
     pub fn new(volume: Volume) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(SongQueue::new(RepeatMode::Off))),
+            queue: Arc::new(Mutex::new(Queue::new(RepeatMode::All))),
             state: Arc::new(RwLock::new(PlayerState::NotStarted)),
             sender: None,
             time_playing: Arc::new(RwLock::new(Duration::from_secs(0))),
@@ -284,26 +204,58 @@ impl Player {
     }
 
     // TODO: fix this ugly mess
-    pub fn with_queue(queue: SongQueue, volume: Volume) -> Self {
+    pub fn with_queue(queue: Queue<Song>, volume: Volume) -> Self {
         Self {
             queue: Arc::new(Mutex::new(queue)),
             ..Player::new(volume)
         }
     }
 
-    pub fn queue_mut(&self) -> MutexGuard<SongQueue> {
+    /// Return a Mutex guard to the inner queue.
+    pub fn queue_mut(&mut self) -> MutexGuard<Queue<Song>> {
         self.queue.lock().unwrap()
     }
 
-    /// If available, return a cloned version of the Song that's currently playing.
-    pub fn current(&self) -> Option<Song> {
-        let queue_lock = self.queue.lock().unwrap();
-        queue_lock.current()
+    /// Set the player's volume.
+    pub fn set_volume(&mut self, volume: Volume) {
+        let mut self_volume = self.volume.write().unwrap();
+        *self_volume = volume
     }
 
+    /// Get the player's volume
+    pub fn volume(&self) -> Volume {
+        *self.volume.read().unwrap()
+    }
+
+    /// If available, return a cloned version of the [`Song`] that's currently playing.
+    pub fn current(&mut self) -> Option<Song> {
+        let queue_lock = self.queue.lock().unwrap();
+        queue_lock.current().cloned()
+    }
+
+    /// Return a bool if the player is currently paused.
+    /// 
+    /// The player might not be paused immediately after [`pause`].
+    /// 
+    /// [`pause`]: Self::pause
     pub fn is_paused(&self) -> bool {
         let state = *self.state.read().unwrap();
         matches!(state, PlayerState::Paused)
+    }
+
+    /// Return a bool if the player is currently paused.
+    /// 
+    /// The player might not be playing immediately after [`resume`].
+    /// 
+    /// [`resume`]: Self::resume
+    pub fn is_playing(&self) -> bool {
+        let state = *self.state.read().unwrap();
+        matches!(state, PlayerState::Playing)
+    }
+
+    /// Return the player's state at this moment.
+    pub fn state(&self) -> PlayerState {
+        *self.state.read().unwrap()
     }
 
     /// Send a message to the audio playing thread.
@@ -343,6 +295,8 @@ impl Player {
     }
 
     /// Start the player.
+    /// 
+    /// This method spawns a seperate thread which continously decodes audio for the current song, and pushes it to a consumer for the cpal library to use
     pub fn run(&mut self) -> Result<(), PlayerRunningError> {
         {
             let mut state_lock = self.state.write().unwrap();
@@ -370,6 +324,7 @@ impl Player {
                     let Some(song) = queue_lock.next() else {
                         break;
                     };
+                    println!("{song:?}");
                     song.clone()
                 };
                 let (mut reader, mut decoder) = song.reader_decoder().unwrap();
@@ -391,14 +346,11 @@ impl Player {
                 while !source_exhausted || !producer.is_empty() {
                     match stream_rx.try_recv() {
                         // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
-                        Ok(e) => match e {
-                            // I know the match isn't needed if I only match _ but I'll keep it if I need to do different stuff depending on branch
-                            _ => {
-                                let _ = control_tx.send(PlayerMessage::Pause);
-                                (stream, stream_rx, stream_channels, producer) =
-                                    stream_setup(volume.clone());
-                                println!("Got stream error: {e}");
-                            }
+                        Ok(e) => {
+                            let _ = control_tx.send(PlayerMessage::Pause);
+                            (stream, stream_rx, stream_channels, producer) =
+                                stream_setup(volume.clone());
+                            println!("Got stream error: {e}");
                         },
                         Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
                         _ => (),
@@ -411,14 +363,14 @@ impl Player {
                                 let mut state_lock = player_state.write().unwrap();
                                 *state_lock = PlayerState::Paused;
                                 playing = false;
-                                // stream.pause().unwrap();
+                                stream.pause().unwrap();
                                 // We can slow down the thread a bit if the player is paused
                                 thread::sleep(Duration::from_millis(100));
                             }
                             PlayerMessage::Resume => {
                                 let mut state_lock = player_state.write().unwrap();
                                 *state_lock = PlayerState::Playing;
-                                // stream.play().unwrap();
+                                stream.play().unwrap();
                                 playing = true;
                             }
                             PlayerMessage::Seek(dur) => {
@@ -501,10 +453,10 @@ impl Player {
         Ok(())
     }
 
-    /// Seek to a specific duration of the song, if one is currently playing.
+    /// Seek to the given duration in the song, if one is currently playing.
     ///
     /// If the duration is longer than the maximum duration returns an error.
-    pub fn seek_duration(&self, duration: Duration) -> Result<bool, SeekError> {
+    pub fn seek_duration(&mut self, duration: Duration) -> Result<bool, SeekError> {
         let duration_max = self.current().ok_or(SeekError::NoCurrentSong)?.duration;
         if duration > duration_max {
             return Err(SeekError::out_of_range(duration, duration_max));
@@ -513,22 +465,22 @@ impl Player {
     }
 
     /// Skip to the next song.
-    pub fn fast_forward(&self) {
+    pub fn fast_forward(&mut self) {
         let mut queue_lock = self.queue.lock().unwrap();
         queue_lock.skip(1);
         self.stop();
     }
 
     /// Rewind to the beginning of the track if it has been playing long enough, otherwise the previous track.
-    pub fn rewind(&self) {
-        let mut queue_lock = self.queue.lock().unwrap();
-        let time_playing = self.time_playing.read().unwrap();
+    pub fn rewind(&mut self) {
+        let time_playing = self.time_playing.read().unwrap().as_secs_f32();
         /// If the current song has been playing for longer than this constant, go back to the beginning of it
         const REWIND_TOLERANCE: f32 = 3.0;
-        if time_playing.as_secs_f32() < REWIND_TOLERANCE && self.current().is_some() {
-            // Seeking to 0 should never fail, and checking if current is Some guarantees we have a song playing
-            let _ = self.seek_duration(Duration::from_secs(0));
+        if time_playing < REWIND_TOLERANCE && self.current().is_some() {
+            self.seek_duration(Duration::from_secs(0))
+                .expect("Rewinding to 0 with a song playing should not fail");
         } else {
+            let mut queue_lock = self.queue.lock().unwrap();
             queue_lock.rewind(1);
             self.stop();
         }
@@ -565,7 +517,7 @@ fn write_audio<T: Sample>(
     let volume = volume.read().unwrap();
     for d in data.iter_mut() {
         match samples.try_pop() {
-            Some(sample) => *d = T::from_sample(sample * volume.0),
+            Some(sample) => *d = T::from_sample(sample * volume.multiplier),
             None => *d = T::from_sample(SampleType::EQUILIBRIUM),
         }
     }
@@ -602,8 +554,9 @@ fn stream_setup(
 ) {
     let (device, stream_config) = init_cpal();
     let stream_channels = stream_config.channels() as usize;
+    const BUF_SIZE: usize = 32 * 1024;
     let (producer, consumer) = {
-        let buf: HeapRb<f64> = HeapRb::new(32 * 1024);
+        let buf: HeapRb<f64> = HeapRb::new(BUF_SIZE);
         buf.split()
     };
     let (stream_tx, stream_rx) = mpsc::channel::<cpal::StreamError>();

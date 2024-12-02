@@ -1,8 +1,9 @@
-import { Button, ListView } from "std-widgets.slint";
+import { Button, ListView, Slider } from "std-widgets.slint";
 
 component PlaylistSelection inherits Rectangle {
     preferred-height: 100%;
     background: red;
+    in-out property <int> selected_index;
 }
 
 component SongComponent inherits Rectangle {
@@ -27,28 +28,59 @@ component SongComponent inherits Rectangle {
 export global PlayerControls {
     pure callback is-paused() -> bool;
 
+    pure callback toggle-repeat-mode();
+
     // toggle the current state, this also changes is-paused
-    callback pause-play();
+    pure callback pause-play();
 
     // first arg is playlist id, second is song id
-    callback start-song(int, int);
+    pure callback start-song(int, int);
+
+    pure callback rewind();
+    pure callback fast-forward();
+
+    pure callback change-volume(float);
+    pure callback get-volume() -> float;
 }
 
 component PlayerControlsComponent inherits Rectangle {
     background: green;
-    button := Button {
-        clicked => {
-            PlayerControls.pause-play();
+
+    HorizontalLayout {
+        rewind-button := Button {
+            text: "Rewind";
+            clicked => {
+                PlayerControls.rewind();
+            }
+        }
+        ff-button := Button {
+            text: "FF";
+            clicked => {
+                PlayerControls.fast-forward();
+            }
+        }
+        button := Button {
+            text: PlayerControls.is-paused() ? "Paused" : "Playing";
+            clicked => {
+                PlayerControls.pause-play();
+                self.text = PlayerControls.is-paused() ? "Paused" : "Playing";
+            }
+        }
+        toggle-repeat-mode-button := Button {
+            text: "RM";
+            clicked => {
+                PlayerControls.toggle-repeat-mode();
+            }
+        }
+        volume-slider := Slider {
+            value: PlayerControls.get-volume();
+            minimum: 0;
+            maximum: 1;
+            changed(percent) => {
+                PlayerControls.change-volume(percent);
+            }
         }
     }
-    states [
-        paused when PlayerControls.is-paused(): {
-            button.text: "Paused";
-        }
-        playing: {
-            button.text: "Playing";
-        }
-    ]
 }
 
 export struct SongModel {
@@ -57,10 +89,19 @@ export struct SongModel {
     duration: int,
 }
 
+export enum RepeatModeEnum {
+    Off,
+    Single,
+    All,
+}
+
 export component AppWindow inherits Window {
     preferred-height: 1080px / 2;
     preferred-width: 1920px / 2;
-    in-out property <[SongModel]> songs;
+    in property <[SongModel]> songs;
+    in property <int> curr_playlist_id;
+    in property <int> curr_song_id;
+
     VerticalLayout {
         HorizontalLayout {
             PlaylistSelection {
@@ -68,13 +109,13 @@ export component AppWindow inherits Window {
             }
 
             ListView {
-                for i in 20: SongComponent {
+                for song in songs: SongComponent {
                     height: 10%;
-                    title: "Song \{i}";
+                    title: "Song \{song.id}";
                 }
             }
         }
 
-        PlayerControlsComponent { }
+        controls := PlayerControlsComponent { }
     }
 }

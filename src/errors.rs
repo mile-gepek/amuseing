@@ -2,10 +2,16 @@ use std::fmt::Debug;
 use std::time::Duration;
 use thiserror::Error;
 
+/// Returned by [`Player::run`] if the player is still running.
+/// 
+/// [`Player::run`]: crate::playback::Player::run
 #[derive(Debug, Error)]
 #[error("The player is already running")]
 pub struct PlayerRunningError;
 
+/// Returned when [`Player::seek_duration`] fails.
+/// 
+/// This can be because the duration given was out of bounds, or because the method was called when there was no song playing
 #[derive(Debug, Error)]
 pub enum SeekError {
     #[error("0")]
@@ -28,5 +34,19 @@ pub enum OutOfBoundsError<T: PartialOrd + Debug> {
     #[error("Expected value higher than {max:?}, got {value:?}")]
     High { value: T, max: T },
     #[error("Expected value in range ({min:?}, {max:?}), got {value:?}")]
-    LowHigh { value: T, min: T, max: T },
+    Range { value: T, min: T, max: T },
+}
+
+impl<T: PartialOrd + Debug> OutOfBoundsError<T> {
+    pub fn low(value: T, min: T) -> Self {
+        Self::Low { value, min }
+    }
+
+    pub fn high(value: T, max: T) -> Self {
+        Self::High { value, max }
+    }
+
+    pub fn range(value: T, min: T, max: T) -> Self {
+        Self::Range { value, min, max }
+    }
 }
