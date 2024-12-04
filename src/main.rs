@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use amuseing::playback::{Player, Playlist, Song, Volume};
+use amuseing::playback::{Player, Playlist, Song, AtomicVolume};
 use amuseing::queue::{Queue, RepeatMode};
 use slint::{ModelRc, Timer, TimerMode, VecModel};
 
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     queue.extend(songs.clone());
     let songs_as_model: Vec<SongModel> = songs.into_iter().map(|song| song.into()).collect();
     app.set_songs(ModelRc::new(VecModel::from_slice(&songs_as_model)));
-    let volume = Volume::from_percent(0.5);
+    let volume = AtomicVolume::from_percent(0.5);
     let mut player = Player::with_queue(queue, volume);
     player.run().unwrap();
     let player = Rc::new(RefCell::new(player));
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     app.global::<PlayerControls>()
         .on_change_volume(move |percent| {
             let mut player = player_copy.borrow_mut();
-            player.set_volume(Volume::from_percent(percent as f64));
+            player.set_volume(&AtomicVolume::from_percent(percent as f64));
             let app = app_copy.unwrap();
             app.global::<PlayerControls>().set_volume(percent);
         });
@@ -115,11 +115,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         let Some(current) = player.current() else {
             return;
         };
-        let duration = current.duration().as_secs_f32();
-        let time_playing = player.time_playing().as_secs_f32();
+        let duration = current.duration().as_secs_f64();
+        let time_playing = player.time_playing().as_secs_f64();
         let percent = time_playing / duration;
         let app = app_weak.unwrap();
-        app.global::<PlayerControls>().set_time_playing(percent);
+        app.global::<PlayerControls>().set_time_playing(percent as f32);
     });
 
     app.run()?;

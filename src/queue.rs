@@ -38,9 +38,7 @@ pub struct Queue<T> {
     index: usize,
     /// The repeat mode of the queue.
     ///
-    /// The value is used in [`next`] to determine which item to return.
-    ///
-    /// [`next`]: Self::next
+    /// The value is used in `next` to determine which item to return.
     pub repeat_mode: RepeatMode,
     /// Used for proper iteration after skipping/jumping, and initial `next` call
     has_advanced: bool,
@@ -137,7 +135,9 @@ impl<T> Queue<T> {
     ///
     /// This method guarantees the next item is `n` ahead.
     ///
-    /// If the repeat mode is Off, skipping beyond the end of the queue will set the index to the length of the queue, otherwise wrap around to the beginning.
+    /// If the repeat mode is [`Off`], skipping beyond the end of the queue will set the index to the length of the queue, otherwise wrap around to the beginning.
+    /// 
+    /// [`Off`]: RepeatMode::Off
     pub fn skip(&mut self, n: usize) {
         let new_index = if self.items.is_empty()
             || ((self.items.len() - self.index) < n && self.repeat_mode == RepeatMode::Off)

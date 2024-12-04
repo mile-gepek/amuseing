@@ -4,8 +4,10 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::sync::{mpsc, MutexGuard, RwLockWriteGuard};
-use std::sync::{Arc, Mutex, RwLock};
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::{fs, path::PathBuf, time::Duration};
 use std::{io, thread};
 use symphonia::core::audio::{AudioBuffer, Signal};
@@ -146,19 +148,28 @@ pub enum PlayerMessage {
     Quit,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Volume {
-    percent: f64,
-    multiplier: f64,
+#[derive(Debug)]
+pub struct AtomicVolume {
+    percent: AtomicU64,
+    multiplier: AtomicU64,
 }
 
-impl Volume {
-    pub fn percent(&self) -> &f64 {
-        &self.percent
+impl AtomicVolume {
+    pub fn percent(&self) -> f64 {
+        let as_u64 = self.percent.load(Ordering::Relaxed);
+        f64::from_bits(as_u64)
     }
 
-    pub fn multiplier(&self) -> &f64 {
-        &self.multiplier
+    pub fn multiplier(&self) -> f64 {
+        let as_u64 = self.multiplier.load(Ordering::Relaxed);
+        f64::from_bits(as_u64)
+    }
+
+    fn store_volume(&self, other: &Self) {
+        let percent = other.percent.load(Ordering::Acquire);
+        let multiplier = other.multiplier.load(Ordering::Acquire);
+        self.percent.store(percent, Ordering::Relaxed);
+        self.multiplier.store(multiplier, Ordering::Relaxed);
     }
 
     /// Same as [`from_percent`], but fails when percentage is outside of the f32 range `0..1`.
@@ -179,9 +190,38 @@ impl Volume {
         const B: f64 = 7.0;
         let multiplier = ((B * percent).exp() - 1.) / (B.exp() - 1.);
         Self {
-            percent,
-            multiplier,
+            percent: AtomicU64::new(percent.to_bits()),
+            multiplier: AtomicU64::new(multiplier.to_bits()),
         }
+    }
+}
+
+// idk if this is dumb dumb
+/// A wrapper around AtomicU64, storing a number of milliseconds as a duration
+#[derive(Debug, Default)]
+pub struct AtomicMilliseconds(AtomicU64);
+
+impl Deref for AtomicMilliseconds {
+    type Target = AtomicU64;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for AtomicMilliseconds {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl AtomicMilliseconds {
+    pub fn new(millis: u64) -> Self {
+        Self(AtomicU64::new(millis))
+    }
+
+    pub fn as_secs_f64(&self) -> f64 {
+        let as_u64 = self.load(Ordering::Relaxed);
+        f64::from_bits(as_u64)
     }
 }
 
@@ -191,24 +231,28 @@ pub struct Player {
     state: Arc<Mutex<PlayerState>>,
     /// None if the player hasn't started yes, the player's state is `PlayerState::NotStarted` in this case
     sender: Option<mpsc::Sender<PlayerMessage>>,
-    time_playing: Arc<Mutex<Duration>>,
-    volume: Arc<Mutex<Volume>>,
+
+    //
+    // TODO: turn `time_playing` and `volume` into atomics instead of locking
+    // 
+    time_playing: Arc<AtomicMilliseconds>,
+    volume: Arc<AtomicVolume>,
 }
 
 impl Player {
     /// Create a new player with the given volume.
-    pub fn new(volume: Volume) -> Self {
+    pub fn new(volume: AtomicVolume) -> Self {
         Self {
             queue: Arc::new(Mutex::new(Queue::new(RepeatMode::All))),
             state: Arc::new(Mutex::new(PlayerState::NotStarted)),
             sender: None,
-            time_playing: Arc::new(Mutex::new(Duration::from_secs(0))),
-            volume: Arc::new(Mutex::new(volume)),
+            time_playing: Arc::new(AtomicMilliseconds::default()),
+            volume: Arc::new(volume),
         }
     }
 
     // TODO: fix this ugly mess
-    pub fn with_queue(queue: Queue<Song>, volume: Volume) -> Self {
+    pub fn with_queue(queue: Queue<Song>, volume: AtomicVolume) -> Self {
         Self {
             queue: Arc::new(Mutex::new(queue)),
             ..Player::new(volume)
@@ -220,14 +264,13 @@ impl Player {
     }
 
     /// Set the player's volume.
-    pub fn set_volume(&mut self, volume: Volume) {
-        let mut self_volume = self.volume.lock().unwrap();
-        *self_volume = volume
+    pub fn set_volume(&mut self, volume: &AtomicVolume) {
+        self.volume.store_volume(volume);
     }
 
     /// Get the player's volume
-    pub fn volume(&self) -> Volume {
-        *self.volume.lock().unwrap()
+    pub fn volume(&self) -> &AtomicVolume {
+        self.volume.as_ref()
     }
 
     /// If available, return a cloned version of the [`Song`] that's currently playing.
@@ -235,8 +278,8 @@ impl Player {
         self.queue.lock().unwrap().current().cloned()
     }
 
-    pub fn time_playing(&self) -> Duration {
-        *self.time_playing.lock().unwrap()
+    pub fn time_playing(&self) -> &AtomicMilliseconds {
+        self.time_playing.as_ref()
     }
 
     /// Return a bool if the player is currently paused.
@@ -338,8 +381,7 @@ impl Player {
                 let track_id = track.id;
                 let time_base = track.codec_params.time_base.unwrap();
                 {
-                    let mut time_playing_lock = time_playing.lock().unwrap();
-                    *time_playing_lock = Default::default();
+                    time_playing.store(0, Ordering::Relaxed);
 
                     let mut state_lock = player_state.lock().unwrap();
                     *state_lock = PlayerState::Playing;
@@ -393,9 +435,9 @@ impl Player {
                                         },
                                     )
                                     .expect("Mp3 readers should always be seekable");
-                                let mut time_playing_lock = time_playing.lock().unwrap();
                                 let time = time_base.calc_time(seeked_to.actual_ts);
-                                *time_playing_lock = time.into();
+                                let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
+                                time_playing.store(millis, Ordering::Relaxed);
                                 // Reset the decoder after seeking, the docs say this is a necessary step after seeking
                                 decoder.reset();
                             }
@@ -424,8 +466,9 @@ impl Player {
 
                         if let Ok(packet) = reader.next_packet() {
                             {
-                                let mut duration_lock = time_playing.lock().unwrap();
-                                *duration_lock = time_base.calc_time(packet.ts()).into();
+                                let time = time_base.calc_time(packet.ts());
+                                let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
+                                time_playing.store(millis, Ordering::Relaxed);
                             }
                             source_exhausted = false;
                             let audio_buf = decoder.decode(&packet).unwrap();
@@ -452,8 +495,7 @@ impl Player {
             *state_lock = PlayerState::Finished;
 
             // Set the player's time_playing duration to 0 when finished
-            let mut time_playing_lock = time_playing.lock().unwrap();
-            *time_playing_lock = Default::default();
+            time_playing.store(0, Ordering::Relaxed);
         });
         Ok(())
     }
@@ -478,9 +520,9 @@ impl Player {
 
     /// Rewind to the beginning of the track if it has been playing long enough, otherwise the previous track.
     pub fn rewind(&mut self) {
-        let time_playing = self.time_playing.lock().unwrap().as_secs_f32();
+        let time_playing = (self.time_playing.load(Ordering::Relaxed) as f64) / 1000.;
         /// If the current song has been playing for longer than this constant, go back to the beginning of it
-        const REWIND_TOLERANCE: f32 = 3.0;
+        const REWIND_TOLERANCE: f64 = 3.0;
         if time_playing > REWIND_TOLERANCE && self.current().is_some() {
             self.seek_duration(Duration::from_secs(0))
                 .expect("Rewinding to 0 with a song playing should not fail");
@@ -512,13 +554,12 @@ fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
 fn write_audio<T: Sample>(
     data: &mut [T],
     samples: &mut impl Consumer<Item = SampleType>,
-    volume: &Mutex<Volume>,
+    volume: &AtomicVolume,
     _cbinfo: &cpal::OutputCallbackInfo,
 ) where
     T: cpal::FromSample<SampleType>,
 {
     // Channel remapping might be done here, to lower the load on the Player thread
-    let volume = volume.lock().unwrap();
     for d in data.iter_mut() {
         match samples.try_pop() {
             Some(sample) => *d = T::from_sample(sample * volume.multiplier()),
@@ -533,7 +574,7 @@ fn create_stream<T>(
     stream_config: &cpal::StreamConfig,
     stream_tx: mpsc::Sender<cpal::StreamError>,
     mut consumer: (impl Consumer<Item = SampleType> + std::marker::Send + 'static),
-    volume: Arc<Mutex<Volume>>,
+    volume: Arc<AtomicVolume>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: SizedSample + cpal::FromSample<SampleType>,
@@ -549,7 +590,7 @@ where
 }
 
 fn stream_setup(
-    volume: Arc<Mutex<Volume>>,
+    volume: Arc<AtomicVolume>,
 ) -> (
     cpal::Stream,
     mpsc::Receiver<cpal::StreamError>,
