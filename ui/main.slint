@@ -29,6 +29,7 @@ export global PlayerControls {
     pure callback is-paused() -> bool;
 
     pure callback toggle-repeat-mode();
+    in property <string> repeat-mode-text: "All";
 
     // toggle the current state, this also changes is-paused
     pure callback pause-play();
@@ -40,44 +41,59 @@ export global PlayerControls {
     pure callback fast-forward();
 
     pure callback change-volume(float);
-    pure callback get-volume() -> float;
+    in-out property <float> volume: 0.5;
+
+    pure callback seek(float);
+    in-out property <float> time_playing: 0;
+
 }
 
 component PlayerControlsComponent inherits Rectangle {
     background: green;
 
-    HorizontalLayout {
-        rewind-button := Button {
-            text: "Rewind";
-            clicked => {
-                PlayerControls.rewind();
-            }
-        }
-        ff-button := Button {
-            text: "FF";
-            clicked => {
-                PlayerControls.fast-forward();
-            }
-        }
-        button := Button {
-            text: PlayerControls.is-paused() ? "Paused" : "Playing";
-            clicked => {
-                PlayerControls.pause-play();
-                self.text = PlayerControls.is-paused() ? "Paused" : "Playing";
-            }
-        }
-        toggle-repeat-mode-button := Button {
-            text: "RM";
-            clicked => {
-                PlayerControls.toggle-repeat-mode();
-            }
-        }
-        volume-slider := Slider {
-            value: PlayerControls.get-volume();
+    VerticalLayout {
+        // Change this to a custom component ffs
+        seek-bar := Slider {
             minimum: 0;
             maximum: 1;
+            // value: PlayerControls.time_playing;
             changed(percent) => {
-                PlayerControls.change-volume(percent);
+                PlayerControls.seek(percent);
+            }
+        }
+        HorizontalLayout {
+            rewind-button := Button {
+                text: "Rewind";
+                clicked => {
+                    PlayerControls.rewind();
+                }
+            }
+            ff-button := Button {
+                text: "FF";
+                clicked => {
+                    PlayerControls.fast-forward();
+                }
+            }
+            button := Button {
+                text: PlayerControls.is-paused() ? "Paused" : "Playing";
+                clicked => {
+                    PlayerControls.pause-play();
+                    self.text = PlayerControls.is-paused() ? "Paused" : "Playing";
+                }
+            }
+            toggle-repeat-mode-button := Button {
+                text: PlayerControls.repeat-mode-text;
+                clicked => {
+                    PlayerControls.toggle-repeat-mode();
+                }
+            }
+            volume-slider := Slider {
+                value: PlayerControls.volume;
+                minimum: 0;
+                maximum: 1;
+                changed(percent) => {
+                    PlayerControls.change-volume(percent);
+                }
             }
         }
     }
@@ -87,12 +103,6 @@ export struct SongModel {
     id: int,
     title: string,
     duration: int,
-}
-
-export enum RepeatModeEnum {
-    Off,
-    Single,
-    All,
 }
 
 export component AppWindow inherits Window {

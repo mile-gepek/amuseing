@@ -4,7 +4,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::sync::{mpsc, MutexGuard};
+use std::sync::{mpsc, MutexGuard, RwLockWriteGuard};
 use std::sync::{Arc, Mutex, RwLock};
 use std::{fs, path::PathBuf, time::Duration};
 use std::{io, thread};
@@ -26,9 +26,9 @@ use crate::queue::{Queue, RepeatMode};
 /// Represents a song from a [`Player`]s queue.
 ///
 /// Songs are played from a [`Player`], which uses a Symphonia reader and decoder read the samples from the file.
-/// 
+///
 /// Songs should be created with [`from_path`].
-/// 
+///
 /// [`from_path`]: Self::from_path
 ///
 /// The duration of the song is automatically calculated when created.
@@ -157,8 +157,12 @@ impl Volume {
         &self.percent
     }
 
-    /// Same as [`from_percent`], but fails when percentage is outside of the f32 range 0..1.
-    /// 
+    pub fn multiplier(&self) -> &f64 {
+        &self.multiplier
+    }
+
+    /// Same as [`from_percent`], but fails when percentage is outside of the f32 range `0..1`.
+    ///
     /// [`from_percent`]: Self::from_percent
     pub fn from_percent_checked(percent: f64) -> Result<Self, OutOfBoundsError<f64>> {
         if !(percent > 0. && percent < 1.) {
@@ -184,11 +188,11 @@ impl Volume {
 #[derive(Clone, Debug)]
 pub struct Player {
     queue: Arc<Mutex<Queue<Song>>>,
-    state: Arc<RwLock<PlayerState>>,
-    /// None if the player hasn't started yes, the player's state is [`PlayerState::NotStarted`] in this case
+    state: Arc<Mutex<PlayerState>>,
+    /// None if the player hasn't started yes, the player's state is `PlayerState::NotStarted` in this case
     sender: Option<mpsc::Sender<PlayerMessage>>,
-    time_playing: Arc<RwLock<Duration>>,
-    volume: Arc<RwLock<Volume>>,
+    time_playing: Arc<Mutex<Duration>>,
+    volume: Arc<Mutex<Volume>>,
 }
 
 impl Player {
@@ -196,10 +200,10 @@ impl Player {
     pub fn new(volume: Volume) -> Self {
         Self {
             queue: Arc::new(Mutex::new(Queue::new(RepeatMode::All))),
-            state: Arc::new(RwLock::new(PlayerState::NotStarted)),
+            state: Arc::new(Mutex::new(PlayerState::NotStarted)),
             sender: None,
-            time_playing: Arc::new(RwLock::new(Duration::from_secs(0))),
-            volume: Arc::new(RwLock::new(volume)),
+            time_playing: Arc::new(Mutex::new(Duration::from_secs(0))),
+            volume: Arc::new(Mutex::new(volume)),
         }
     }
 
@@ -211,51 +215,53 @@ impl Player {
         }
     }
 
-    /// Return a Mutex guard to the inner queue.
-    pub fn queue_mut(&mut self) -> MutexGuard<Queue<Song>> {
+    pub fn queue_mut(&self) -> MutexGuard<Queue<Song>> {
         self.queue.lock().unwrap()
     }
 
     /// Set the player's volume.
     pub fn set_volume(&mut self, volume: Volume) {
-        let mut self_volume = self.volume.write().unwrap();
+        let mut self_volume = self.volume.lock().unwrap();
         *self_volume = volume
     }
 
     /// Get the player's volume
     pub fn volume(&self) -> Volume {
-        *self.volume.read().unwrap()
+        *self.volume.lock().unwrap()
     }
 
     /// If available, return a cloned version of the [`Song`] that's currently playing.
-    pub fn current(&mut self) -> Option<Song> {
-        let queue_lock = self.queue.lock().unwrap();
-        queue_lock.current().cloned()
+    pub fn current(&self) -> Option<Song> {
+        self.queue.lock().unwrap().current().cloned()
+    }
+
+    pub fn time_playing(&self) -> Duration {
+        *self.time_playing.lock().unwrap()
     }
 
     /// Return a bool if the player is currently paused.
-    /// 
+    ///
     /// The player might not be paused immediately after [`pause`].
-    /// 
+    ///
     /// [`pause`]: Self::pause
     pub fn is_paused(&self) -> bool {
-        let state = *self.state.read().unwrap();
+        let state = *self.state.lock().unwrap();
         matches!(state, PlayerState::Paused)
     }
 
     /// Return a bool if the player is currently paused.
-    /// 
+    ///
     /// The player might not be playing immediately after [`resume`].
-    /// 
+    ///
     /// [`resume`]: Self::resume
     pub fn is_playing(&self) -> bool {
-        let state = *self.state.read().unwrap();
+        let state = *self.state.lock().unwrap();
         matches!(state, PlayerState::Playing)
     }
 
     /// Return the player's state at this moment.
     pub fn state(&self) -> PlayerState {
-        *self.state.read().unwrap()
+        *self.state.lock().unwrap()
     }
 
     /// Send a message to the audio playing thread.
@@ -295,11 +301,11 @@ impl Player {
     }
 
     /// Start the player.
-    /// 
+    ///
     /// This method spawns a seperate thread which continously decodes audio for the current song, and pushes it to a consumer for the cpal library to use
     pub fn run(&mut self) -> Result<(), PlayerRunningError> {
         {
-            let mut state_lock = self.state.write().unwrap();
+            let mut state_lock = self.state.lock().unwrap();
             match *state_lock {
                 PlayerState::Playing | PlayerState::Paused => return Err(PlayerRunningError),
                 _ => {}
@@ -324,7 +330,6 @@ impl Player {
                     let Some(song) = queue_lock.next() else {
                         break;
                     };
-                    println!("{song:?}");
                     song.clone()
                 };
                 let (mut reader, mut decoder) = song.reader_decoder().unwrap();
@@ -333,10 +338,10 @@ impl Player {
                 let track_id = track.id;
                 let time_base = track.codec_params.time_base.unwrap();
                 {
-                    let mut time_playing_lock = time_playing.write().unwrap();
+                    let mut time_playing_lock = time_playing.lock().unwrap();
                     *time_playing_lock = Default::default();
 
-                    let mut state_lock = player_state.write().unwrap();
+                    let mut state_lock = player_state.lock().unwrap();
                     *state_lock = PlayerState::Playing;
                 }
 
@@ -351,7 +356,7 @@ impl Player {
                             (stream, stream_rx, stream_channels, producer) =
                                 stream_setup(volume.clone());
                             println!("Got stream error: {e}");
-                        },
+                        }
                         Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
                         _ => (),
                     }
@@ -360,7 +365,7 @@ impl Player {
                             PlayerMessage::Quit => break 'main_loop,
                             PlayerMessage::Stop => break,
                             PlayerMessage::Pause => {
-                                let mut state_lock = player_state.write().unwrap();
+                                let mut state_lock = player_state.lock().unwrap();
                                 *state_lock = PlayerState::Paused;
                                 playing = false;
                                 stream.pause().unwrap();
@@ -368,7 +373,7 @@ impl Player {
                                 thread::sleep(Duration::from_millis(100));
                             }
                             PlayerMessage::Resume => {
-                                let mut state_lock = player_state.write().unwrap();
+                                let mut state_lock = player_state.lock().unwrap();
                                 *state_lock = PlayerState::Playing;
                                 stream.play().unwrap();
                                 playing = true;
@@ -388,7 +393,7 @@ impl Player {
                                         },
                                     )
                                     .expect("Mp3 readers should always be seekable");
-                                let mut time_playing_lock = time_playing.write().unwrap();
+                                let mut time_playing_lock = time_playing.lock().unwrap();
                                 let time = time_base.calc_time(seeked_to.actual_ts);
                                 *time_playing_lock = time.into();
                                 // Reset the decoder after seeking, the docs say this is a necessary step after seeking
@@ -419,7 +424,7 @@ impl Player {
 
                         if let Ok(packet) = reader.next_packet() {
                             {
-                                let mut duration_lock = time_playing.write().unwrap();
+                                let mut duration_lock = time_playing.lock().unwrap();
                                 *duration_lock = time_base.calc_time(packet.ts()).into();
                             }
                             source_exhausted = false;
@@ -443,11 +448,11 @@ impl Player {
                 }
             }
             // Set the player's state to Finished after we break out of the loop
-            let mut state_lock = player_state.write().unwrap();
+            let mut state_lock = player_state.lock().unwrap();
             *state_lock = PlayerState::Finished;
 
             // Set the player's time_playing duration to 0 when finished
-            let mut time_playing_lock = time_playing.write().unwrap();
+            let mut time_playing_lock = time_playing.lock().unwrap();
             *time_playing_lock = Default::default();
         });
         Ok(())
@@ -473,15 +478,14 @@ impl Player {
 
     /// Rewind to the beginning of the track if it has been playing long enough, otherwise the previous track.
     pub fn rewind(&mut self) {
-        let time_playing = self.time_playing.read().unwrap().as_secs_f32();
+        let time_playing = self.time_playing.lock().unwrap().as_secs_f32();
         /// If the current song has been playing for longer than this constant, go back to the beginning of it
         const REWIND_TOLERANCE: f32 = 3.0;
-        if time_playing < REWIND_TOLERANCE && self.current().is_some() {
+        if time_playing > REWIND_TOLERANCE && self.current().is_some() {
             self.seek_duration(Duration::from_secs(0))
                 .expect("Rewinding to 0 with a song playing should not fail");
         } else {
-            let mut queue_lock = self.queue.lock().unwrap();
-            queue_lock.rewind(1);
+            self.queue_mut().rewind(1);
             self.stop();
         }
     }
@@ -508,16 +512,16 @@ fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
 fn write_audio<T: Sample>(
     data: &mut [T],
     samples: &mut impl Consumer<Item = SampleType>,
-    volume: &RwLock<Volume>,
+    volume: &Mutex<Volume>,
     _cbinfo: &cpal::OutputCallbackInfo,
 ) where
     T: cpal::FromSample<SampleType>,
 {
     // Channel remapping might be done here, to lower the load on the Player thread
-    let volume = volume.read().unwrap();
+    let volume = volume.lock().unwrap();
     for d in data.iter_mut() {
         match samples.try_pop() {
-            Some(sample) => *d = T::from_sample(sample * volume.multiplier),
+            Some(sample) => *d = T::from_sample(sample * volume.multiplier()),
             None => *d = T::from_sample(SampleType::EQUILIBRIUM),
         }
     }
@@ -529,7 +533,7 @@ fn create_stream<T>(
     stream_config: &cpal::StreamConfig,
     stream_tx: mpsc::Sender<cpal::StreamError>,
     mut consumer: (impl Consumer<Item = SampleType> + std::marker::Send + 'static),
-    volume: Arc<RwLock<Volume>>,
+    volume: Arc<Mutex<Volume>>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: SizedSample + cpal::FromSample<SampleType>,
@@ -537,15 +541,15 @@ where
     let callback = move |data: &mut [T], cbinfo: &cpal::OutputCallbackInfo| {
         write_audio(data, &mut consumer, &volume, cbinfo)
     };
-    // TODO: set up mpsc between Player thread and cpal thread to get new audio device on disconnect, or otherwise catch other errors
     let err_fn = move |e| {
+        eprintln!("{e}");
         let _ = stream_tx.send(e);
     };
     device.build_output_stream(stream_config, callback, err_fn, None)
 }
 
 fn stream_setup(
-    volume: Arc<RwLock<Volume>>,
+    volume: Arc<Mutex<Volume>>,
 ) -> (
     cpal::Stream,
     mpsc::Receiver<cpal::StreamError>,
@@ -595,6 +599,5 @@ fn stream_setup(
         sample_format => panic!("Unsupported sample format: '{sample_format}'"),
     }
     .unwrap();
-    stream.play().unwrap();
     (stream, stream_rx, stream_channels, producer)
 }

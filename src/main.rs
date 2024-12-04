@@ -2,7 +2,7 @@
 
 use amuseing::playback::{Player, Playlist, Song, Volume};
 use amuseing::queue::{Queue, RepeatMode};
-use slint::{ModelRc, VecModel};
+use slint::{ModelRc, Timer, TimerMode, VecModel};
 
 slint::include_modules!();
 
@@ -63,26 +63,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         player.is_paused()
     });
 
+    let app_weak = app.as_weak();
     let player_copy = player.clone();
     app.global::<PlayerControls>()
         .on_toggle_repeat_mode(move || {
+            let app = app_weak.unwrap();
             let mut player = player_copy.borrow_mut();
             let mut queue = player.queue_mut();
             queue.repeat_mode = queue.repeat_mode.next();
+            app.global::<PlayerControls>().set_repeat_mode_text(queue.repeat_mode.to_text().into());
         });
 
     let player_copy = player.clone();
+    let app_copy = app.as_weak();
     app.global::<PlayerControls>()
         .on_change_volume(move |percent| {
             let mut player = player_copy.borrow_mut();
             player.set_volume(Volume::from_percent(percent as f64));
-        });
-
-    let player_copy = player.clone();
-    app.global::<PlayerControls>()
-        .on_get_volume(move || -> f32 {
-            let player = player_copy.borrow_mut();
-            *player.volume().percent() as f32
+            let app = app_copy.unwrap();
+            app.global::<PlayerControls>().set_volume(percent);
         });
 
     let player_copy = player.clone();
@@ -95,6 +94,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     app.global::<PlayerControls>().on_rewind(move || {
         let mut player = player_copy.borrow_mut();
         player.rewind();
+    });
+
+    let player_copy = player.clone();
+    app.global::<PlayerControls>().on_seek(move |percent| {
+        let mut player = player_copy.borrow_mut();
+        let Some(current) = player.current() else {
+            return;
+        };
+        let duration = current.duration();
+        let duration_seek = duration.mul_f32(percent);
+        let _ = player.seek_duration(duration_seek);
+    });
+
+    let timer = Timer::default();
+    let player_copy = player.clone();
+    let app_weak = app.as_weak();
+    timer.start(TimerMode::Repeated, std::time::Duration::from_millis(100), move || {
+        let player = player_copy.borrow_mut();
+        let Some(current) = player.current() else {
+            return;
+        };
+        let duration = current.duration().as_secs_f32();
+        let time_playing = player.time_playing().as_secs_f32();
+        let percent = time_playing / duration;
+        let app = app_weak.unwrap();
+        app.global::<PlayerControls>().set_time_playing(percent);
     });
 
     app.run()?;

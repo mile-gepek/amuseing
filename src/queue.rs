@@ -15,6 +15,14 @@ impl RepeatMode {
             Self::Off => Self::All,
         }
     }
+
+    pub fn to_text(&self) -> String {
+        match *self {
+            Self::All => "All".to_string(),
+            Self::Single => "One".to_string(),
+            Self::Off => "Off".to_string(),
+        }
+    }
 }
 
 /// A queue of items with variable iteration rules, depending on the repeat_mode field.
@@ -60,13 +68,13 @@ impl<T> Queue<T> {
     /// [`rewind`]: Self::rewind
     ///
     /// # Iteration rules
-    /// 
+    ///
     /// If we reach the end of the queue, and the repeat mode is [`All`], the queue will wrap around to the beginning.
     ///
     /// If it is [`Single`], the same element will be returned every time.
     ///
     /// If it is [`Off`], this method will return None, and the internal index will not be updated.
-    /// 
+    ///
     /// [`All`]: RepeatMode::All
     /// [`Single`]: RepeatMode::Single
     /// [`Off`]: RepeatMode::Off
@@ -74,7 +82,10 @@ impl<T> Queue<T> {
         if self.items.is_empty() {
             return None;
         }
-        if self.repeat_mode != RepeatMode::Single && self.has_advanced && self.index < self.items.len() {
+        if self.repeat_mode != RepeatMode::Single
+            && self.has_advanced
+            && self.index < self.items.len()
+        {
             self.index += 1;
         }
         if self.repeat_mode != RepeatMode::Off {
@@ -128,9 +139,10 @@ impl<T> Queue<T> {
     ///
     /// If the repeat mode is Off, skipping beyond the end of the queue will set the index to the length of the queue, otherwise wrap around to the beginning.
     pub fn skip(&mut self, n: usize) {
-        let new_index = if !self.items.is_empty()
-            || (self.items.len() - self.index) > n && self.repeat_mode == RepeatMode::Off
+        let new_index = if self.items.is_empty()
+            || ((self.items.len() - self.index) < n && self.repeat_mode == RepeatMode::Off)
         {
+            println!("{}, {}", self.items.len() - self.index, n);
             self.items.len()
         } else {
             (self.index + n) % self.items.len()
