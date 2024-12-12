@@ -165,7 +165,7 @@ impl AtomicVolume {
         f64::from_bits(as_u64)
     }
 
-    fn store_volume(&self, other: &Self) {
+    fn set_volume(&self, other: &Self) {
         let percent = other.percent.load(Ordering::Acquire);
         let multiplier = other.multiplier.load(Ordering::Acquire);
         self.percent.store(percent, Ordering::Relaxed);
@@ -201,27 +201,18 @@ impl AtomicVolume {
 #[derive(Debug, Default)]
 pub struct AtomicMilliseconds(AtomicU64);
 
-impl Deref for AtomicMilliseconds {
-    type Target = AtomicU64;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for AtomicMilliseconds {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 impl AtomicMilliseconds {
     pub fn new(millis: u64) -> Self {
         Self(AtomicU64::new(millis))
     }
 
     pub fn as_secs_f64(&self) -> f64 {
-        let as_u64 = self.load(Ordering::Relaxed);
-        f64::from_bits(as_u64)
+        let as_u64 = self.0.load(Ordering::Relaxed);
+        f64::from_bits(as_u64) / 1000.
+    }
+
+    pub fn set_millis(&self, millis: u64) {
+        self.0.store(millis, Ordering::Relaxed)
     }
 }
 
@@ -259,13 +250,13 @@ impl Player {
         }
     }
 
-    pub fn queue_mut(&self) -> MutexGuard<Queue<Song>> {
+    pub fn queue_mut(&mut self) -> MutexGuard<Queue<Song>> {
         self.queue.lock().unwrap()
     }
 
     /// Set the player's volume.
     pub fn set_volume(&mut self, volume: &AtomicVolume) {
-        self.volume.store_volume(volume);
+        self.volume.set_volume(volume);
     }
 
     /// Get the player's volume
@@ -381,20 +372,19 @@ impl Player {
                 let track_id = track.id;
                 let time_base = track.codec_params.time_base.unwrap();
                 {
-                    time_playing.store(0, Ordering::Relaxed);
+                    time_playing.set_millis(0);
 
                     let mut state_lock = player_state.lock().unwrap();
                     *state_lock = PlayerState::Playing;
                 }
 
                 let mut playing = true;
-                let mut source_exhausted = false;
                 let mut sample_deque: VecDeque<SampleType> = VecDeque::new();
-                while !source_exhausted || !producer.is_empty() {
+                loop {
                     match stream_rx.try_recv() {
                         // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
                         Ok(e) => {
-                            let _ = control_tx.send(PlayerMessage::Pause);
+                            control_tx.send(PlayerMessage::Pause).expect("control_rx should always be alive in the thread");
                             (stream, stream_rx, stream_channels, producer) =
                                 stream_setup(volume.clone());
                             println!("Got stream error: {e}");
@@ -402,8 +392,8 @@ impl Player {
                         Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
                         _ => (),
                     }
-                    match control_rx.try_recv() {
-                        Ok(message) => match message {
+                    for message in control_rx.try_iter() {
+                        match message {
                             PlayerMessage::Quit => break 'main_loop,
                             PlayerMessage::Stop => break,
                             PlayerMessage::Pause => {
@@ -437,14 +427,11 @@ impl Player {
                                     .expect("Mp3 readers should always be seekable");
                                 let time = time_base.calc_time(seeked_to.actual_ts);
                                 let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
-                                time_playing.store(millis, Ordering::Relaxed);
+                                time_playing.set_millis(millis);
                                 // Reset the decoder after seeking, the docs say this is a necessary step after seeking
                                 decoder.reset();
                             }
-                        },
-                        // Break if the channel is disconnected, because this means the sender was dropped
-                        Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
-                        _ => (),
+                        }
                     }
                     if !playing {
                         continue;
@@ -464,28 +451,23 @@ impl Player {
 
                         // TODO: figure out resampling
 
-                        if let Ok(packet) = reader.next_packet() {
-                            {
-                                let time = time_base.calc_time(packet.ts());
-                                let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
-                                time_playing.store(millis, Ordering::Relaxed);
-                            }
-                            source_exhausted = false;
-                            let audio_buf = decoder.decode(&packet).unwrap();
-                            let mut audio_buf_type: AudioBuffer<SampleType> =
-                                audio_buf.make_equivalent();
-                            audio_buf.convert(&mut audio_buf_type);
-                            for (l, r) in audio_buf_type
-                                .chan(0)
-                                .iter()
-                                .zip(audio_buf_type.chan(1).iter())
-                            {
-                                // In theory, this could make the sample deque grow as large as the song, which probably isn't good
-                                sample_deque.push_back(*l);
-                                sample_deque.push_back(*r);
-                            }
-                        } else {
-                            source_exhausted = true;
+                        let Ok(packet) = reader.next_packet() else {
+                            break
+                        };
+                        let time = time_base.calc_time(packet.ts());
+                        let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
+                        time_playing.set_millis(millis);
+                        
+                        let audio_buf_ref = decoder.decode(&packet).unwrap();
+                        let mut audio_buf = audio_buf_ref.make_equivalent();
+                        audio_buf_ref.convert(&mut audio_buf);
+                        for (l, r) in audio_buf
+                            .chan(0)
+                            .iter()
+                            .zip(audio_buf.chan(1).iter())
+                        {
+                            sample_deque.push_back(*l);
+                            sample_deque.push_back(*r);
                         }
                     }
                 }
@@ -495,7 +477,7 @@ impl Player {
             *state_lock = PlayerState::Finished;
 
             // Set the player's time_playing duration to 0 when finished
-            time_playing.store(0, Ordering::Relaxed);
+            time_playing.set_millis(0);
         });
         Ok(())
     }
@@ -520,7 +502,7 @@ impl Player {
 
     /// Rewind to the beginning of the track if it has been playing long enough, otherwise the previous track.
     pub fn rewind(&mut self) {
-        let time_playing = (self.time_playing.load(Ordering::Relaxed) as f64) / 1000.;
+        let time_playing = self.time_playing.as_secs_f64();
         /// If the current song has been playing for longer than this constant, go back to the beginning of it
         const REWIND_TOLERANCE: f64 = 3.0;
         if time_playing > REWIND_TOLERANCE && self.current().is_some() {
