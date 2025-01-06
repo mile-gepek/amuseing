@@ -4,13 +4,12 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, MutexGuard};
 use std::sync::{Arc, Mutex};
 use std::{fs, path::PathBuf, time::Duration};
 use std::{io, thread};
-use symphonia::core::audio::{AudioBuffer, Signal};
+use symphonia::core::audio::Signal;
 use symphonia::core::units;
 use symphonia::core::{
     codecs::Decoder,
@@ -223,13 +222,11 @@ pub struct Player {
     /// None if the player hasn't started yes, the player's state is `PlayerState::NotStarted` in this case
     sender: Option<mpsc::Sender<PlayerMessage>>,
 
-    //
-    // TODO: turn `time_playing` and `volume` into atomics instead of locking
-    // 
     time_playing: Arc<AtomicMilliseconds>,
     volume: Arc<AtomicVolume>,
 }
 
+// TODO: turn into builder pattern
 impl Player {
     /// Create a new player with the given volume.
     pub fn new(volume: AtomicVolume) -> Self {
@@ -242,7 +239,6 @@ impl Player {
         }
     }
 
-    // TODO: fix this ugly mess
     pub fn with_queue(queue: Queue<Song>, volume: AtomicVolume) -> Self {
         Self {
             queue: Arc::new(Mutex::new(queue)),
@@ -361,7 +357,7 @@ impl Player {
             'main_loop: loop {
                 let song = {
                     let mut queue_lock = queue.lock().unwrap();
-                    let Some(song) = queue_lock.next() else {
+                    let Some(song) = queue_lock.next_item() else {
                         break;
                     };
                     song.clone()
@@ -384,7 +380,9 @@ impl Player {
                     match stream_rx.try_recv() {
                         // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
                         Ok(e) => {
-                            control_tx.send(PlayerMessage::Pause).expect("control_rx should always be alive in the thread");
+                            control_tx
+                                .send(PlayerMessage::Pause)
+                                .expect("control_rx should always be alive in the thread");
                             (stream, stream_rx, stream_channels, producer) =
                                 stream_setup(volume.clone());
                             println!("Got stream error: {e}");
@@ -452,20 +450,16 @@ impl Player {
                         // TODO: figure out resampling
 
                         let Ok(packet) = reader.next_packet() else {
-                            break
+                            break;
                         };
                         let time = time_base.calc_time(packet.ts());
                         let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
                         time_playing.set_millis(millis);
-                        
+
                         let audio_buf_ref = decoder.decode(&packet).unwrap();
                         let mut audio_buf = audio_buf_ref.make_equivalent();
                         audio_buf_ref.convert(&mut audio_buf);
-                        for (l, r) in audio_buf
-                            .chan(0)
-                            .iter()
-                            .zip(audio_buf.chan(1).iter())
-                        {
+                        for (l, r) in audio_buf.chan(0).iter().zip(audio_buf.chan(1).iter()) {
                             sample_deque.push_back(*l);
                             sample_deque.push_back(*r);
                         }
@@ -533,14 +527,12 @@ fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
     (device, supported_config_range.with_max_sample_rate())
 }
 
-fn write_audio<T: Sample>(
+fn write_audio<T: Sample + cpal::FromSample<SampleType>>(
     data: &mut [T],
     samples: &mut impl Consumer<Item = SampleType>,
     volume: &AtomicVolume,
     _cbinfo: &cpal::OutputCallbackInfo,
-) where
-    T: cpal::FromSample<SampleType>,
-{
+) {
     // Channel remapping might be done here, to lower the load on the Player thread
     for d in data.iter_mut() {
         match samples.try_pop() {

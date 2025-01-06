@@ -1,3 +1,3 @@
-mod playback;
+mod player;
 
-pub use playback::*;
+pub use player::*;

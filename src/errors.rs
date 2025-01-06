@@ -3,14 +3,14 @@ use std::time::Duration;
 use thiserror::Error;
 
 /// Returned by [`Player::run`] if the player is still running.
-/// 
+///
 /// [`Player::run`]: crate::playback::Player::run
 #[derive(Debug, Error)]
 #[error("The player is already running")]
 pub struct PlayerRunningError;
 
 /// Returned when [`Player::seek_duration`] fails.
-/// 
+///
 /// This can be because the duration given was out of bounds, or because the method was called when there was no song playing
 #[derive(Debug, Error)]
 pub enum SeekError {

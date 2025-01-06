@@ -25,6 +25,8 @@ impl RepeatMode {
     }
 }
 
+// TODO: turn into builder pattern
+
 /// A queue of items with variable iteration rules, depending on the repeat_mode field.
 ///
 /// Queues like this are commonly found in music players, such as spotify or youtube music.
@@ -76,7 +78,7 @@ impl<T> Queue<T> {
     /// [`All`]: RepeatMode::All
     /// [`Single`]: RepeatMode::Single
     /// [`Off`]: RepeatMode::Off
-    pub fn next(&mut self) -> Option<&T> {
+    pub fn next_item(&mut self) -> Option<&T> {
         if self.items.is_empty() {
             return None;
         }
@@ -136,7 +138,7 @@ impl<T> Queue<T> {
     /// This method guarantees the next item is `n` ahead.
     ///
     /// If the repeat mode is [`Off`], skipping beyond the end of the queue will set the index to the length of the queue, otherwise wrap around to the beginning.
-    /// 
+    ///
     /// [`Off`]: RepeatMode::Off
     pub fn skip(&mut self, n: usize) {
         let new_index = if self.items.is_empty()
@@ -180,30 +182,30 @@ mod tests {
     fn queue_iteration_all_test() {
         let mut queue: Queue<u32> = Queue::new(RepeatMode::All);
         queue.items = vec![1, 2, 3];
-        assert_eq!(queue.next(), Some(&1));
-        assert_eq!(queue.next(), Some(&2));
-        assert_eq!(queue.next(), Some(&3));
-        assert_eq!(queue.next(), Some(&1));
-        assert_eq!(queue.next(), Some(&2));
+        assert_eq!(queue.next_item(), Some(&1));
+        assert_eq!(queue.next_item(), Some(&2));
+        assert_eq!(queue.next_item(), Some(&3));
+        assert_eq!(queue.next_item(), Some(&1));
+        assert_eq!(queue.next_item(), Some(&2));
     }
 
     #[test]
     fn queue_iteration_off_test() {
         let mut queue: Queue<u32> = Queue::new(RepeatMode::Off);
         queue.items = vec![1, 2, 3];
-        assert_eq!(queue.next(), Some(&1));
-        assert_eq!(queue.next(), Some(&2));
-        assert_eq!(queue.next(), Some(&3));
-        assert_eq!(queue.next(), None);
-        assert_eq!(queue.next(), None);
+        assert_eq!(queue.next_item(), Some(&1));
+        assert_eq!(queue.next_item(), Some(&2));
+        assert_eq!(queue.next_item(), Some(&3));
+        assert_eq!(queue.next_item(), None);
+        assert_eq!(queue.next_item(), None);
     }
 
     #[test]
     fn queue_iteration_single_test() {
         let mut queue: Queue<u32> = Queue::new(RepeatMode::Single);
         queue.items = vec![1, 2, 3];
-        assert_eq!(queue.next(), Some(&1));
-        assert_eq!(queue.next(), Some(&1));
-        assert_eq!(queue.next(), Some(&1));
+        assert_eq!(queue.next_item(), Some(&1));
+        assert_eq!(queue.next_item(), Some(&1));
+        assert_eq!(queue.next_item(), Some(&1));
     }
 }
