@@ -1,25 +1,35 @@
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat, SizedSample};
-use ringbuf::traits::{Consumer, Observer, Producer, Split};
-use ringbuf::HeapRb;
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, MutexGuard};
-use std::sync::{Arc, Mutex};
-use std::{fs, path::PathBuf, time::Duration};
-use std::{io, thread};
-use symphonia::core::audio::Signal;
-use symphonia::core::units;
+use cpal::{
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+    Sample, SampleFormat, SizedSample,
+};
+use ringbuf::{
+    traits::{Consumer, Observer, Producer, Split},
+    HeapRb,
+};
+use std::{
+    collections::VecDeque,
+    fmt::Debug,
+    fs, io,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Mutex, MutexGuard,
+    },
+    thread,
+    time::Duration,
+};
 use symphonia::core::{
+    audio::Signal,
     codecs::Decoder,
-    errors::Result as SymphoniaResult,
+    errors::{Error, Result as SymphoniaResult},
     formats::{FormatOptions, FormatReader},
     io::MediaSourceStream,
+    units,
 };
 use symphonia_bundle_mp3::{MpaDecoder, MpaReader};
 
 type SampleType = f64;
+const BUFFER_SIZE: usize = 4 * 1024;
 
 use crate::errors::{OutOfBoundsError, PlayerRunningError, SeekError};
 use crate::queue::{Queue, RepeatMode};
@@ -123,7 +133,8 @@ impl Playlist {
             .filter_map(|f| {
                 let path = f.ok()?.path();
                 if path.extension()? == "mp3" {
-                    return Song::from_path("title".to_string(), path).ok();
+                    let title = path.file_name().unwrap().to_str().unwrap();
+                    return Song::from_path(title.into(), path).ok();
                 }
                 None
             })
@@ -137,6 +148,11 @@ pub enum PlayerState {
     Playing,
     Finished,
     NotStarted,
+}
+impl PlayerState {
+    pub fn is_playing(&self) -> bool {
+        matches!(self, Self::Playing | Self::Paused)
+    }
 }
 
 pub enum PlayerMessage {
@@ -175,7 +191,7 @@ impl AtomicVolume {
     ///
     /// [`from_percent`]: Self::from_percent
     pub fn from_percent_checked(percent: f64) -> Result<Self, OutOfBoundsError<f64>> {
-        if !(percent > 0. && percent < 1.) {
+        if !(percent >= 0. && percent <= 1.) {
             return Err(OutOfBoundsError::range(percent, 0., 1.));
         }
         Ok(Self::from_percent(percent))
@@ -183,11 +199,14 @@ impl AtomicVolume {
 
     /// Calculates the sample multiplier depending on a percentage to adjust for human hearing.
     ///
-    /// The curve is: `(e^(B*percent) - 1) / (e^B - 1)`, where B is 7.0.
-    /// Why? Because.
+    /// The curve is: `2 * e^(Lp/10 - 2)`, where `Lp` is interpolated between -60 and 0 decibels, based on the percentage
+    /// Why? Because I think this is how loudness works please help.
     pub fn from_percent(percent: f64) -> Self {
-        const B: f64 = 7.0;
-        let multiplier = ((B * percent).exp() - 1.) / (B.exp() - 1.);
+        assert!(percent <= 1. && percent >= 0.);
+        let min_lp = -60f64;
+        let max_lp = 0f64;
+        let lp_interpolated = min_lp + (max_lp - min_lp) * percent;
+        let multiplier = 2. * (lp_interpolated / 10. - 2.).exp();
         Self {
             percent: AtomicU64::new(percent.to_bits()),
             multiplier: AtomicU64::new(multiplier.to_bits()),
@@ -206,8 +225,8 @@ impl AtomicMilliseconds {
     }
 
     pub fn as_secs_f64(&self) -> f64 {
-        let as_u64 = self.0.load(Ordering::Relaxed);
-        f64::from_bits(as_u64) / 1000.
+        let millis = self.0.load(Ordering::Relaxed);
+        millis as f64 / 1000.
     }
 
     pub fn set_millis(&self, millis: u64) {
@@ -215,7 +234,6 @@ impl AtomicMilliseconds {
     }
 }
 
-#[derive(Clone, Debug)]
 pub struct Player {
     queue: Arc<Mutex<Queue<Song>>>,
     state: Arc<Mutex<PlayerState>>,
@@ -229,17 +247,17 @@ pub struct Player {
 // TODO: turn into builder pattern
 impl Player {
     /// Create a new player with the given volume.
-    pub fn new(volume: AtomicVolume) -> Self {
+    pub fn new(volume: f64) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(Queue::new(RepeatMode::All))),
-            state: Arc::new(Mutex::new(PlayerState::NotStarted)),
+            queue: Mutex::new(Queue::new(RepeatMode::All)).into(),
+            state: Mutex::new(PlayerState::NotStarted).into(),
             sender: None,
-            time_playing: Arc::new(AtomicMilliseconds::default()),
-            volume: Arc::new(volume),
+            time_playing: AtomicMilliseconds::default().into(),
+            volume: AtomicVolume::from_percent(volume).into(),
         }
     }
 
-    pub fn with_queue(queue: Queue<Song>, volume: AtomicVolume) -> Self {
+    pub fn with_queue(queue: Queue<Song>, volume: f64) -> Self {
         Self {
             queue: Arc::new(Mutex::new(queue)),
             ..Player::new(volume)
@@ -367,16 +385,16 @@ impl Player {
                 let channel_factor = stream_channels / track.codec_params.channels.unwrap().count();
                 let track_id = track.id;
                 let time_base = track.codec_params.time_base.unwrap();
+                time_playing.set_millis(0);
                 {
-                    time_playing.set_millis(0);
-
                     let mut state_lock = player_state.lock().unwrap();
                     *state_lock = PlayerState::Playing;
                 }
 
                 let mut playing = true;
                 let mut sample_deque: VecDeque<SampleType> = VecDeque::new();
-                loop {
+
+                'song_loop: loop {
                     match stream_rx.try_recv() {
                         // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
                         Ok(e) => {
@@ -393,18 +411,22 @@ impl Player {
                     for message in control_rx.try_iter() {
                         match message {
                             PlayerMessage::Quit => break 'main_loop,
-                            PlayerMessage::Stop => break,
+                            PlayerMessage::Stop => break 'song_loop,
                             PlayerMessage::Pause => {
-                                let mut state_lock = player_state.lock().unwrap();
-                                *state_lock = PlayerState::Paused;
+                                {
+                                    let mut state_lock = player_state.lock().unwrap();
+                                    *state_lock = PlayerState::Paused;
+                                }
                                 playing = false;
                                 stream.pause().unwrap();
                                 // We can slow down the thread a bit if the player is paused
                                 thread::sleep(Duration::from_millis(100));
                             }
                             PlayerMessage::Resume => {
-                                let mut state_lock = player_state.lock().unwrap();
-                                *state_lock = PlayerState::Playing;
+                                {
+                                    let mut state_lock = player_state.lock().unwrap();
+                                    *state_lock = PlayerState::Playing;
+                                }
                                 stream.play().unwrap();
                                 playing = true;
                             }
@@ -414,17 +436,23 @@ impl Player {
                                 // FormatReader is seekable depending on the MediaSourceStream.is_seekable() method
                                 // I'm fairly certain this should always be true for mp3 files
                                 // TODO: The bool `seekable` should be used to check if we can seek, I don't know how to handle that yet
-                                let seeked_to = reader
-                                    .seek(
-                                        SeekMode::Coarse,
-                                        SeekTo::Time {
-                                            time,
-                                            track_id: Some(track_id),
-                                        },
-                                    )
-                                    .expect("Mp3 readers should always be seekable");
-                                let time = time_base.calc_time(seeked_to.actual_ts);
-                                let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
+                                let millis = match reader.seek(
+                                    SeekMode::Coarse,
+                                    SeekTo::Time {
+                                        time,
+                                        track_id: Some(track_id),
+                                    },
+                                ) {
+                                    Ok(seeked_to) => {
+                                        let time = time_base.calc_time(seeked_to.actual_ts);
+                                        ((time.seconds as f64 + time.frac) * 1000.) as u64
+                                    }
+                                    Err(e) => match e {
+                                        // IoError from seeking (I think) only happens when the format reader reaches EOF, at which point we can skip to the next song
+                                        Error::IoError(_) => continue 'main_loop,
+                                        e => panic!("{}", e),
+                                    },
+                                };
                                 time_playing.set_millis(millis);
                                 // Reset the decoder after seeking, the docs say this is a necessary step after seeking
                                 decoder.reset();
@@ -450,19 +478,30 @@ impl Player {
                         // TODO: figure out resampling
 
                         let Ok(packet) = reader.next_packet() else {
-                            break;
+                            break 'song_loop;
                         };
-                        let time = time_base.calc_time(packet.ts());
-                        let millis = time.seconds * 1000 + ((time.frac * 100.) as u64);
-                        time_playing.set_millis(millis);
-
                         let audio_buf_ref = decoder.decode(&packet).unwrap();
                         let mut audio_buf = audio_buf_ref.make_equivalent();
                         audio_buf_ref.convert(&mut audio_buf);
-                        for (l, r) in audio_buf.chan(0).iter().zip(audio_buf.chan(1).iter()) {
+                        let mut sample_iter =
+                            audio_buf.chan(0).iter().zip(audio_buf.chan(1).iter());
+                        while let Some((l, r)) = sample_iter.next() {
+                            if producer.vacant_len() >= 2 * channel_factor {
+                                for _ in 0..channel_factor {
+                                    producer.try_push(*l).unwrap();
+                                    producer.try_push(*r).unwrap();
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        for (l, r) in sample_iter {
                             sample_deque.push_back(*l);
                             sample_deque.push_back(*r);
                         }
+                        let time = time_base.calc_time(packet.ts());
+                        let millis = ((time.seconds as f64 + time.frac) * 1000.) as u64;
+                        time_playing.set_millis(millis);
                     }
                 }
             }
@@ -514,17 +553,11 @@ fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
         .default_output_device()
         .expect("no output device available");
 
-    // Create an output stream for the audio so we can play it
-    // NOTE: If system doesn't support the file's sample rate, the program will panic when we try to play,
-    // so we'll need to resample the audio to a supported config
-    let supported_config_range = device
-        .supported_output_configs()
-        .expect("error querying audio output configs")
-        .next()
-        .expect("no supported audio config found");
+    let stream_config = device
+        .default_output_config()
+        .expect("A device should have a default config");
 
-    // Pick the best (highest) sample rate
-    (device, supported_config_range.with_max_sample_rate())
+    (device, stream_config)
 }
 
 fn write_audio<T: Sample + cpal::FromSample<SampleType>>(
@@ -573,9 +606,8 @@ fn stream_setup(
 ) {
     let (device, stream_config) = init_cpal();
     let stream_channels = stream_config.channels() as usize;
-    const BUF_SIZE: usize = 32 * 1024;
     let (producer, consumer) = {
-        let buf: HeapRb<f64> = HeapRb::new(BUF_SIZE);
+        let buf: HeapRb<f64> = HeapRb::new(BUFFER_SIZE);
         buf.split()
     };
     let (stream_tx, stream_rx) = mpsc::channel::<cpal::StreamError>();

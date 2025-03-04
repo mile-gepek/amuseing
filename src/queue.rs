@@ -1,3 +1,8 @@
+use std::{
+    fmt::Display,
+    ops::{Deref, DerefMut},
+};
+
 use crate::errors::OutOfBoundsError;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -15,13 +20,15 @@ impl RepeatMode {
             Self::Off => Self::All,
         }
     }
+}
 
-    pub fn to_text(&self) -> String {
-        match *self {
-            Self::All => "All".to_string(),
-            Self::Single => "One".to_string(),
-            Self::Off => "Off".to_string(),
-        }
+impl Display for RepeatMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match *self {
+            Self::Off => "off",
+            Self::All => "all",
+            Self::Single => "one",
+        })
     }
 }
 
@@ -44,6 +51,19 @@ pub struct Queue<T> {
     pub repeat_mode: RepeatMode,
     /// Used for proper iteration after skipping/jumping, and initial `next` call
     has_advanced: bool,
+}
+
+impl<T> Deref for Queue<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
+impl<T> DerefMut for Queue<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.items
+    }
 }
 
 impl<T> Queue<T> {
@@ -95,26 +115,23 @@ impl<T> Queue<T> {
         self.items.get(self.index)
     }
 
-    /// Push a value onto the internal vector
-    pub fn push(&mut self, value: T) {
-        self.items.push(value)
-    }
-
-    /// Extend the internal vector by the iterator
-    pub fn extend<I>(&mut self, iter: I)
-    where
-        I: IntoIterator<Item = T>,
-    {
-        self.items.extend(iter);
-    }
-
-    /// Remove the value at `index`, calling [`Vec::remove`] internally.
+    /// Remove the value at position `index`, calling [`Vec::remove`] internally.
     ///
     /// Rewinds the queue by 1 if the given index is less than the internal one.
     pub fn remove(&mut self, index: usize) {
         self.items.remove(index);
         if index < self.index {
             self.index -= 1;
+        }
+    }
+
+    /// Inserts an item at position `index`, calling [`Vec::remove`] internally.
+    ///
+    /// Advanced the queue by 1 if `index` is less or equal to the internal one, for consistent iteration.
+    pub fn insert(&mut self, index: usize, item: T) {
+        self.items.insert(index, item);
+        if index <= self.index {
+            self.index += 1;
         }
     }
 
@@ -140,12 +157,14 @@ impl<T> Queue<T> {
     /// If the repeat mode is [`Off`], skipping beyond the end of the queue will set the index to the length of the queue, otherwise wrap around to the beginning.
     ///
     /// [`Off`]: RepeatMode::Off
-    pub fn skip(&mut self, n: usize) {
-        let new_index = if self.items.is_empty()
-            || ((self.items.len() - self.index) < n && self.repeat_mode == RepeatMode::Off)
-        {
-            println!("{}, {}", self.items.len() - self.index, n);
-            self.items.len()
+    pub fn skip(&mut self, mut n: usize) {
+        if self.has_advanced {
+            n += 1;
+        }
+        let new_index = if self.items.is_empty() {
+            0
+        } else if self.repeat_mode == RepeatMode::Off {
+            (self.index + n).clamp(0, self.items.len())
         } else {
             (self.index + n) % self.items.len()
         };
@@ -207,5 +226,39 @@ mod tests {
         assert_eq!(queue.next_item(), Some(&1));
         assert_eq!(queue.next_item(), Some(&1));
         assert_eq!(queue.next_item(), Some(&1));
+    }
+
+    #[test]
+    fn test_skip() {
+        let items: Vec<u32> = vec![1, 5, 3, 7, 8, 6, 9, 4];
+        let mut queue = Queue::new(RepeatMode::Off);
+        queue.items = items;
+        queue.skip(2);
+        assert_eq!(queue.next_item(), Some(&3));
+        queue.skip(1);
+        assert_eq!(queue.next_item(), Some(&8));
+    }
+
+    #[test]
+    fn test_push() {
+        let mut queue = Queue::new(RepeatMode::Off);
+        queue.items = vec![];
+        queue.push(6);
+        queue.push(4);
+        assert_eq!(&queue.items, &[6, 4]);
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut queue = Queue::new(RepeatMode::Off);
+        queue.items = vec![1, 6, 3, 9, 2];
+        // It's set to 0 anyway but I like this being explicit
+        queue.index = 0;
+        queue.remove(3);
+        assert_eq!(&queue.items, &[1, 6, 3, 2]);
+        queue.index = 2;
+        queue.remove(0);
+        assert_eq!(&queue.items, &[6, 3, 2]);
+        assert_eq!(queue.index, 1);
     }
 }

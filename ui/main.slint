@@ -26,12 +26,14 @@ component SongComponent inherits Rectangle {
 }
 
 export global PlayerControls {
-    pure callback is-paused() -> bool;
+    in property <string> pause-button-text: "Playing";
+    // Is the player even running / do we have an active song (either paused or playing)
+    // pure callback is-running() -> bool;
+    in-out property <bool> is-running: true;
 
     pure callback toggle-repeat-mode();
     in property <string> repeat-mode-text: "All";
 
-    // toggle the current state, this also changes is-paused
     pure callback pause-play();
 
     // first arg is playlist id, second is song id
@@ -44,21 +46,35 @@ export global PlayerControls {
     in-out property <float> volume: 0.5;
 
     pure callback seek(float);
-    in-out property <float> time_playing: 0;
-
+    pure callback time-playing-percent() -> float;
 }
 
 component PlayerControlsComponent inherits Rectangle {
     background: green;
 
+    // While the slider is clicked and held with the mouse, `seeking` is true which turns off the timer for updating the value of the slider
+    property <bool> seeking: false;
+
     VerticalLayout {
-        // Change this to a custom component ffs
         seek-bar := Slider {
-            minimum: 0;
-            maximum: 1;
-            // value: PlayerControls.time_playing;
+            minimum: 0.0;
+            maximum: 1.0;
+            value: 0.0;
+            step: 0.0;
             changed(percent) => {
+                seeking = true;
+            }
+            released(percent) => {
                 PlayerControls.seek(percent);
+                seeking = false;
+            }
+        }
+        // I fucking hate this
+        Timer {
+            interval: 0.1s;
+            running: !seeking;
+            triggered() => {
+                seek-bar.value = PlayerControls.time-playing-percent();
             }
         }
         HorizontalLayout {
@@ -75,10 +91,9 @@ component PlayerControlsComponent inherits Rectangle {
                 }
             }
             button := Button {
-                text: PlayerControls.is-paused() ? "Paused" : "Playing";
+                text : PlayerControls.pause-button-text;
                 clicked => {
                     PlayerControls.pause-play();
-                    self.text = PlayerControls.is-paused() ? "Paused" : "Playing";
                 }
             }
             toggle-repeat-mode-button := Button {
@@ -89,8 +104,8 @@ component PlayerControlsComponent inherits Rectangle {
             }
             volume-slider := Slider {
                 value: PlayerControls.volume;
-                minimum: 0;
-                maximum: 1;
+                minimum: 0.0;
+                maximum: 1.0;
                 changed(percent) => {
                     PlayerControls.change-volume(percent);
                 }
@@ -121,11 +136,13 @@ export component AppWindow inherits Window {
             ListView {
                 for song in songs: SongComponent {
                     height: 10%;
-                    title: "Song \{song.id}";
+                    title: "Song \{song.title}";
                 }
             }
         }
 
-        controls := PlayerControlsComponent { }
+        controls := PlayerControlsComponent {
+            visible: PlayerControls.is-running;
+        }
     }
 }
