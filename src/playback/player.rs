@@ -191,7 +191,7 @@ impl AtomicVolume {
     ///
     /// [`from_percent`]: Self::from_percent
     pub fn from_percent_checked(percent: f64) -> Result<Self, OutOfBoundsError<f64>> {
-        if !(percent >= 0. && percent <= 1.) {
+        if !(0. ..=1.).contains(&percent) {
             return Err(OutOfBoundsError::range(percent, 0., 1.));
         }
         Ok(Self::from_percent(percent))
@@ -203,7 +203,7 @@ impl AtomicVolume {
     /// If the percentage is 0. the attenuation is -infinity;
     /// Why? Because I think this is how loudness works please help.
     pub fn from_percent(percent: f64) -> Self {
-        assert!(percent <= 1. && percent >= 0.);
+        assert!((0. ..=1.).contains(&percent));
         let multiplier = if percent == 0. || percent == 1. {
             percent
         } else {
@@ -490,7 +490,7 @@ impl Player {
                         audio_buf_ref.convert(&mut audio_buf);
                         let mut sample_iter =
                             audio_buf.chan(0).iter().zip(audio_buf.chan(1).iter());
-                        while let Some((l, r)) = sample_iter.next() {
+                        for (l, r) in sample_iter.by_ref() {
                             if producer.vacant_len() >= 2 * channel_factor {
                                 for _ in 0..channel_factor {
                                     producer.try_push(*l).unwrap();
