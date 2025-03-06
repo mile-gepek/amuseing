@@ -197,16 +197,21 @@ impl AtomicVolume {
         Ok(Self::from_percent(percent))
     }
 
-    /// Calculates the sample multiplier depending on a percentage to adjust for human hearing.
+    /// Calculates the sample multiplier depending on a percentage to adjust for human hearing being logarithmic.
     ///
-    /// The curve is: `2 * e^(Lp/10 - 2)`, where `Lp` is interpolated between -60 and 0 decibels, based on the percentage
+    /// The curve is: `10^(Ar/20)`, where `Ar` is the relative attenuation interpolated between -60 and 0 decibels, based on the percentage.
+    /// If the percentage is 0. the attenuation is -infinity;
     /// Why? Because I think this is how loudness works please help.
     pub fn from_percent(percent: f64) -> Self {
         assert!(percent <= 1. && percent >= 0.);
-        let min_lp = -60f64;
-        let max_lp = 0f64;
-        let lp_interpolated = min_lp + (max_lp - min_lp) * percent;
-        let multiplier = 2. * (lp_interpolated / 10. - 2.).exp();
+        let multiplier = if percent == 0. || percent == 1. {
+            percent
+        } else {
+            const MIN_AR: f64 = -60f64;
+            const MAX_AR: f64 = 0f64;
+            let ar_interpolated = MIN_AR + (MAX_AR - MIN_AR) * percent;
+            10f64.powf(ar_interpolated / 20.)
+        };
         Self {
             percent: AtomicU64::new(percent.to_bits()),
             multiplier: AtomicU64::new(multiplier.to_bits()),
