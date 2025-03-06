@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 cpal = "0.15.3"
 ringbuf = "0.4.7"
+rubato = "0.16.1"
 slint = "1.10.0"
 symphonia = "0.5.4"
 symphonia-bundle-mp3 = "0.5.4"

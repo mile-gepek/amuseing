@@ -49,6 +49,7 @@ component PlayerControlsComponent inherits Rectangle {
     // While the slider is clicked and held with the mouse, `seeking` is true which turns off the timer for updating the value of the slider
     property <bool> seeking: false;
 
+    property <bool> is-paused: false;
     property <float> volume: 0.5;
     property <bool> is-muted: false;
 
@@ -69,7 +70,7 @@ component PlayerControlsComponent inherits Rectangle {
         // I fucking hate this
         Timer {
             interval: 0.1s;
-            running: !seeking;
+            running: !seeking && !is-paused;
             triggered() => {
                 seek-bar.value = PlayerControls.time-playing-percent();
             }
@@ -88,7 +89,6 @@ component PlayerControlsComponent inherits Rectangle {
                 }
             }
             button := Button {
-                property <bool> is-paused: false;
                 text : is-paused ? "Paused" : "Playing";
                 clicked => {
                     PlayerControls.pause-play();

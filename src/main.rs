@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let mut queue = Queue::new(RepeatMode::All);
     let songs = playlist.songs()?;
-    dbg!(&songs);
+    // dbg!(&songs);
     queue.extend(songs.clone());
     let songs_as_model: Vec<SongModel> = songs.into_iter().map(|song| song.into()).collect();
     app.set_songs(ModelRc::new(VecModel::from_iter(songs_as_model)));
