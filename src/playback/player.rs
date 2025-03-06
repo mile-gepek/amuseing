@@ -13,7 +13,8 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        mpsc, Arc, Mutex, MutexGuard,
+        mpsc::{self, Receiver},
+        Arc, Mutex, MutexGuard,
     },
     thread,
     time::Duration,
@@ -111,6 +112,7 @@ impl Song {
     }
 }
 
+#[allow(dead_code)]
 pub struct Playlist {
     path: PathBuf,
     title: String,
@@ -239,6 +241,18 @@ impl AtomicMilliseconds {
     }
 }
 
+pub enum PlayerUpdate {
+    SongChange { song: Option<Song>, index: usize },
+    DeviceDisconnect,
+    // DeviceChange(),
+    StateChange,
+}
+impl PlayerUpdate {
+    fn song_change(index: usize, song: Option<Song>) -> PlayerUpdate {
+        Self::SongChange { song, index }
+    }
+}
+
 pub struct Player {
     queue: Arc<Mutex<Queue<Song>>>,
     state: Arc<Mutex<PlayerState>>,
@@ -356,7 +370,7 @@ impl Player {
     /// Start the player.
     ///
     /// This method spawns a seperate thread which continously decodes audio for the current song, and pushes it to a consumer for the cpal library to use
-    pub fn run(&mut self) -> Result<(), PlayerRunningError> {
+    pub fn run(&mut self) -> Result<Receiver<PlayerUpdate>, PlayerRunningError> {
         {
             let mut state_lock = self.state.lock().unwrap();
             match *state_lock {
@@ -373,6 +387,7 @@ impl Player {
         let (control_tx, control_rx) = mpsc::channel::<PlayerMessage>();
         self.sender = Some(control_tx.clone());
 
+        let (player_update_tx, player_update_rx) = mpsc::channel::<PlayerUpdate>();
         thread::spawn(move || {
             let (mut stream, mut stream_rx, mut stream_channels, mut producer) =
                 stream_setup(volume.clone());
@@ -380,7 +395,11 @@ impl Player {
             'main_loop: loop {
                 let song = {
                     let mut queue_lock = queue.lock().unwrap();
-                    let Some(song) = queue_lock.next_item() else {
+                    let index = queue_lock.index();
+                    let next_song = queue_lock.next_item();
+                    let _ =
+                        player_update_tx.send(PlayerUpdate::song_change(index, next_song.cloned()));
+                    let Some(song) = next_song else {
                         break;
                     };
                     song.clone()
@@ -408,6 +427,8 @@ impl Player {
                                 .expect("control_rx should always be alive in the thread");
                             (stream, stream_rx, stream_channels, producer) =
                                 stream_setup(volume.clone());
+                            playing = false;
+                            let _ = player_update_tx.send(PlayerUpdate::DeviceDisconnect);
                             println!("Got stream error: {e}");
                         }
                         Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
@@ -517,7 +538,7 @@ impl Player {
             // Set the player's time_playing duration to 0 when finished
             time_playing.set_millis(0);
         });
-        Ok(())
+        Ok(player_update_rx)
     }
 
     /// Seek to the given duration in the song, if one is currently playing.
@@ -533,8 +554,6 @@ impl Player {
 
     /// Skip to the next song.
     pub fn fast_forward(&mut self) {
-        let mut queue_lock = self.queue.lock().unwrap();
-        queue_lock.skip(1);
         self.stop();
     }
 

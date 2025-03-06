@@ -29,29 +29,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     let mut queue = Queue::new(RepeatMode::All);
     let songs = playlist.songs()?;
+    dbg!(&songs);
     queue.extend(songs.clone());
     let songs_as_model: Vec<SongModel> = songs.into_iter().map(|song| song.into()).collect();
-    app.set_songs(ModelRc::new(VecModel::from_slice(&songs_as_model)));
+    app.set_songs(ModelRc::new(VecModel::from_iter(songs_as_model)));
     let volume = 0.5;
     let mut player = Player::with_queue(queue, volume);
 
-    player.run().unwrap();
+    let _player_update_rx = player.run().unwrap();
     let player = Rc::new(RefCell::new(player));
 
-    let app_weak = app.as_weak();
     let player_copy = player.clone();
     app.global::<PlayerControls>().on_pause_play(move || {
         let player = player_copy.borrow();
-        let app = app_weak.unwrap();
-        let pause_button_text = if player.is_paused() {
+        if player.is_paused() {
             player.resume();
-            "Playing"
         } else {
             player.pause();
-            "Paused"
         };
-        let global = app.global::<PlayerControls>();
-        global.set_pause_button_text(pause_button_text.into());
     });
 
     let app_weak = app.as_weak();
@@ -65,8 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let _ = queue.jump(song_id as usize);
             }
             let _ = player.run();
-            let global = app.global::<PlayerControls>();
-            global.set_is_running(true);
+            app.set_player_is_running(true);
         });
 
     let app_weak = app.as_weak();
@@ -82,13 +76,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
 
     let player_copy = player.clone();
-    let app_copy = app.as_weak();
     app.global::<PlayerControls>()
         .on_change_volume(move |percent| {
             let mut player = player_copy.borrow_mut();
             player.set_volume(&AtomicVolume::from_percent(percent as f64));
-            let app = app_copy.unwrap();
-            app.global::<PlayerControls>().set_volume(percent);
         });
 
     let player_copy = player.clone();
@@ -125,12 +116,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             let time_playing = player.time_playing().as_secs_f64();
             (time_playing / duration) as f32
         });
-
-    // let player_copy = player.clone();
-    // app.global::<PlayerControls>().on_is_running(move || {
-    //     let player = player_copy.borrow();
-    //     player.current().is_some()
-    // });
 
     app.run()?;
 

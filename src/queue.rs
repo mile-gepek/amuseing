@@ -115,6 +115,10 @@ impl<T> Queue<T> {
         self.items.get(self.index)
     }
 
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
     /// Remove the value at position `index`, calling [`Vec::remove`] internally.
     ///
     /// Rewinds the queue by 1 if the given index is less than the internal one.

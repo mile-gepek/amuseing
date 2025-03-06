@@ -26,11 +26,6 @@ component SongComponent inherits Rectangle {
 }
 
 export global PlayerControls {
-    in property <string> pause-button-text: "Playing";
-    // Is the player even running / do we have an active song (either paused or playing)
-    // pure callback is-running() -> bool;
-    in-out property <bool> is-running: true;
-
     pure callback toggle-repeat-mode();
     in property <string> repeat-mode-text: "All";
 
@@ -43,7 +38,6 @@ export global PlayerControls {
     pure callback fast-forward();
 
     pure callback change-volume(float);
-    in-out property <float> volume: 0.5;
 
     pure callback seek(float);
     pure callback time-playing-percent() -> float;
@@ -54,6 +48,9 @@ component PlayerControlsComponent inherits Rectangle {
 
     // While the slider is clicked and held with the mouse, `seeking` is true which turns off the timer for updating the value of the slider
     property <bool> seeking: false;
+
+    property <float> volume: 0.5;
+    property <bool> is-muted: false;
 
     VerticalLayout {
         seek-bar := Slider {
@@ -91,9 +88,11 @@ component PlayerControlsComponent inherits Rectangle {
                 }
             }
             button := Button {
-                text : PlayerControls.pause-button-text;
+                property <bool> is-paused: false;
+                text : is-paused ? "Paused" : "Playing";
                 clicked => {
                     PlayerControls.pause-play();
+                    is-paused = !is-paused;
                 }
             }
             toggle-repeat-mode-button := Button {
@@ -102,12 +101,27 @@ component PlayerControlsComponent inherits Rectangle {
                     PlayerControls.toggle-repeat-mode();
                 }
             }
+            mute-button := Button {
+                text: is-muted ? "Unmute": "Mute";
+                clicked => {
+                    if (is-muted) {
+                        PlayerControls.change-volume(volume);
+                        volume-slider.value = volume;
+                    } else {
+                        PlayerControls.change-volume(0);
+                        volume-slider.value = 0;
+                    }
+                    is-muted = !is-muted;
+                }
+            }
             volume-slider := Slider {
-                value: PlayerControls.volume;
+                value: volume;
                 minimum: 0.0;
                 maximum: 1.0;
                 changed(percent) => {
                     PlayerControls.change-volume(percent);
+                    volume = percent;
+                    is-muted = (percent == 0);
                 }
             }
         }
@@ -127,6 +141,8 @@ export component AppWindow inherits Window {
     in property <int> curr_playlist_id;
     in property <int> curr_song_id;
 
+    in property<bool> player-is-running: true;
+
     VerticalLayout {
         HorizontalLayout {
             PlaylistSelection {
@@ -142,7 +158,7 @@ export component AppWindow inherits Window {
         }
 
         controls := PlayerControlsComponent {
-            visible: PlayerControls.is-running;
+            visible: player-is-running;
         }
     }
 }
