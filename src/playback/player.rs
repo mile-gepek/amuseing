@@ -204,7 +204,7 @@ impl AtomicVolume {
     /// Calculates the sample multiplier depending on a percentage to adjust for human hearing being logarithmic.
     ///
     /// The curve is: `10^(Ar/20)`, where `Ar` is the relative attenuation interpolated between -60 and 0 decibels, based on the percentage.
-    /// If the percentage is 0. the attenuation is -infinity;
+    /// If the percentage is 0. the attenuation is -infinity.
     /// Why? Because I think this is how loudness works please help.
     pub fn from_percent(percent: f64) -> Self {
         assert!((0. ..=1.).contains(&percent));
@@ -529,6 +529,7 @@ impl Player {
                         }
                         last_packet_ts = packet.ts();
                     } else {
+                        // dbg!(sample_vec[0].len(), sample_vec[1].len());
                         let (samples_read, samples_output) = resampler
                             .process_into_buffer(&sample_vec, &mut samples_out, None)
                             .unwrap();
@@ -610,6 +611,7 @@ fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
         .default_output_config()
         .expect("A device should have a default config");
 
+    dbg!(stream_config.sample_format());
     (device, stream_config)
 }
 
@@ -621,11 +623,14 @@ fn write_audio<T: Sample + cpal::FromSample<SampleType>>(
     _cbinfo: &cpal::OutputCallbackInfo,
 ) {
     for chunk in data.chunks_mut(channel_factor.into()) {
+        let sample_scaled = if let Some(sample) = samples.try_pop() {
+            (sample * volume.multiplier()).to_sample()
+        } else {
+            T::EQUILIBRIUM
+        };
+        // match samples.try_pop() {
         for d in chunk.iter_mut() {
-            match samples.try_pop() {
-                Some(sample) => *d = T::from_sample(sample * volume.multiplier()),
-                None => *d = T::from_sample(SampleType::EQUILIBRIUM),
-            }
+            *d = sample_scaled;
         }
     }
 }
