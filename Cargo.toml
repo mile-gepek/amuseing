@@ -11,6 +11,7 @@ slint = "1.10.0"
 symphonia = "0.5.4"
 symphonia-bundle-mp3 = "0.5.4"
 thiserror = "2.0.11"
+triple_buffer = "8.1.0"
 
 [build-dependencies]
 slint-build = "1.10.0"

@@ -29,10 +29,12 @@ use symphonia::core::{
     units,
 };
 use symphonia_bundle_mp3::{MpaDecoder, MpaReader};
+use triple_buffer::{triple_buffer, Output};
 
 type SampleType = f64;
-const BUFFER_SIZE: usize = 4 * 1024;
-const CHUNK_SIZE: usize = 1024;
+/// The buffer stores `[f64; 2]` so the number of samples is double.
+const BUFFER_SIZE: usize = 2 * 1024;
+const CHUNK_SIZE: usize = 1 * 1024;
 
 use crate::errors::{OutOfBoundsError, PlayerRunningError, SeekError};
 use crate::queue::{Queue, RepeatMode};
@@ -390,9 +392,15 @@ impl Player {
         self.sender = Some(control_tx.clone());
 
         let (player_update_tx, player_update_rx) = mpsc::channel::<PlayerUpdate>();
+
+        // DECODER THREAD
         thread::spawn(move || {
-            let (mut stream, mut stream_rx, mut producer, mut device_sample_rate) =
-                stream_setup(volume.clone());
+            // Assume we start at 44.1k so the resampler doesn't break;
+            let mut last_song_sample_rate = 44100;
+            let (mut sample_rate_update_input, mut sample_rate_update_output) =
+                triple_buffer(&last_song_sample_rate);
+            let (mut stream, mut stream_rx, mut producer) =
+                stream_setup(sample_rate_update_output, volume.clone());
             stream.play().unwrap();
             'main_loop: loop {
                 let song = {
@@ -417,20 +425,14 @@ impl Player {
                 }
 
                 let mut playing = true;
-                let mut sample_vec: Vec<Vec<SampleType>> = vec![Vec::new(), Vec::new()];
-
                 let song_sample_rate = track.codec_params.sample_rate.unwrap();
-                let mut resampler: FftFixedIn<f64> = FftFixedIn::new(
-                    song_sample_rate as usize,
-                    device_sample_rate as usize,
-                    CHUNK_SIZE,
-                    1,
-                    2,
-                )
-                .expect("Creating a resampler shouldn't fail");
-                let mut samples_out = resampler.output_buffer_allocate(true);
+                if last_song_sample_rate != song_sample_rate {
+                    sample_rate_update_input.write(song_sample_rate);
+                    last_song_sample_rate = song_sample_rate;
+                }
 
                 let mut last_packet_ts = 0;
+                let mut sample_deque = VecDeque::new();
                 'song_loop: loop {
                     match stream_rx.try_recv() {
                         // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
@@ -438,17 +440,10 @@ impl Player {
                             control_tx
                                 .send(PlayerMessage::Pause)
                                 .expect("control_rx should always be alive in the thread");
-                            (stream, stream_rx, producer, device_sample_rate) =
-                                stream_setup(volume.clone());
-                            resampler = FftFixedIn::new(
-                                song_sample_rate as usize,
-                                device_sample_rate as usize,
-                                CHUNK_SIZE,
-                                1,
-                                2,
-                            )
-                            .expect("Creating a resampler shouldn't fail");
-                            samples_out = resampler.output_buffer_allocate(true);
+                            (sample_rate_update_input, sample_rate_update_output) =
+                                triple_buffer(&last_song_sample_rate);
+                            (stream, stream_rx, producer) =
+                                stream_setup(sample_rate_update_output, volume.clone());
                             playing = false;
                             let _ = player_update_tx.send(PlayerUpdate::DeviceDisconnect);
                             println!("Got stream error: {e}");
@@ -512,59 +507,37 @@ impl Player {
                         continue;
                     }
 
-                    // Push samples for the sample deque if none are available
-
-                    // TODO: figure out resampling
-
-                    if sample_vec[0].len() <= resampler.input_frames_next() {
+                    if !sample_deque.is_empty() {
+                        while !producer.is_full() {
+                            let Some(sample) = sample_deque.pop_front() else {
+                                let dur: Duration = time_base.calc_time(last_packet_ts).into();
+                                time_playing.set_millis(dur.as_millis() as u64);
+                                break;
+                            };
+                            producer.try_push(sample).unwrap();
+                        }
+                    }
+                    if sample_deque.is_empty() {
                         let Ok(packet) = reader.next_packet() else {
                             break 'song_loop;
                         };
                         let audio_buf_ref = decoder.decode(&packet).unwrap();
                         let mut audio_buf = audio_buf_ref.make_equivalent();
                         audio_buf_ref.convert(&mut audio_buf);
-                        for (l, r) in audio_buf.chan(0).iter().zip(audio_buf.chan(1)) {
-                            sample_vec[0].push(*l);
-                            sample_vec[1].push(*r);
-                        }
-                        last_packet_ts = packet.ts();
-                    } else {
-                        // dbg!(sample_vec[0].len(), sample_vec[1].len());
-                        let (samples_read, samples_output) = resampler
-                            .process_into_buffer(&sample_vec, &mut samples_out, None)
-                            .unwrap();
-                        drop(sample_vec[0].drain(0..samples_read));
-                        drop(sample_vec[1].drain(0..samples_read));
-                        for (l, r) in samples_out[0]
+                        let mut sample_iter = audio_buf
+                            .chan(0)
                             .iter()
-                            .zip(samples_out[1].iter())
-                            .take(samples_output)
-                        {
-                            while producer.vacant_len() < 2 {
-                                std::thread::sleep(Duration::from_millis(10));
-                            }
-                            producer.try_push(*l).unwrap();
-                            producer.try_push(*r).unwrap();
+                            .zip(audio_buf.chan(1))
+                            .map(|t| [*t.0, *t.1]);
+                        while producer.vacant_len() > 2 {
+                            let Some(pair) = sample_iter.next() else {
+                                break;
+                            };
+                            producer.try_push(pair).unwrap();
                         }
-                        let duration: Duration = time_base.calc_time(last_packet_ts).into();
-                        time_playing.set_millis(duration.as_millis() as u64);
+                        sample_deque.extend(sample_iter);
+                        last_packet_ts = packet.ts();
                     }
-                }
-                dbg!(sample_vec[0].len(), sample_vec[1].len());
-                let samples_output = resampler
-                    .process_partial_into_buffer(Some(&sample_vec), &mut samples_out, None)
-                    .unwrap()
-                    .1;
-                for (l, r) in samples_out[0]
-                    .iter()
-                    .zip(samples_out[1].iter())
-                    .take(samples_output)
-                {
-                    while producer.vacant_len() < 2 {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    producer.try_push(*l).unwrap();
-                    producer.try_push(*r).unwrap();
                 }
             }
         });
@@ -615,20 +588,21 @@ fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
     (device, stream_config)
 }
 
-fn write_audio<T: Sample + cpal::FromSample<SampleType>>(
+fn write_audio<T>(
     data: &mut [T],
-    samples: &mut impl Consumer<Item = SampleType>,
+    samples: &mut VecDeque<SampleType>,
     channel_factor: u16,
     volume: &AtomicVolume,
     _cbinfo: &cpal::OutputCallbackInfo,
-) {
+) where
+    T: Sample + cpal::FromSample<SampleType>,
+{
     for chunk in data.chunks_mut(channel_factor.into()) {
-        let sample_scaled = if let Some(sample) = samples.try_pop() {
+        let sample_scaled = if let Some(sample) = samples.pop_front() {
             (sample * volume.multiplier()).to_sample()
         } else {
             T::EQUILIBRIUM
         };
-        // match samples.try_pop() {
         for d in chunk.iter_mut() {
             *d = sample_scaled;
         }
@@ -639,16 +613,76 @@ fn write_audio<T: Sample + cpal::FromSample<SampleType>>(
 fn create_stream<T>(
     device: cpal::Device,
     stream_config: &cpal::StreamConfig,
+    mut sample_rate_update: Output<u32>,
     stream_tx: mpsc::Sender<cpal::StreamError>,
-    mut consumer: (impl Consumer<Item = SampleType> + std::marker::Send + 'static),
+    mut consumer: (impl Consumer<Item = [SampleType; 2]> + std::marker::Send + 'static),
     volume: Arc<AtomicVolume>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
 where
     T: SizedSample + cpal::FromSample<SampleType>,
 {
+    // FIXME: This could possibly break if the mp3 file is mono.
+    // This can probably be fixed by pushing the same sample twice in the decoder thread if it is.
     let channel_factor = stream_config.channels / 2;
+
+    let sample_rate_in = *sample_rate_update.read() as usize;
+    let sample_rate_out = stream_config.sample_rate.0 as usize;
+    // If the input and output sample rates are the same, we can bypass resampling and write the samples as they are
+    let mut bypass_resampler = sample_rate_in == sample_rate_out;
+    let mut resampler: FftFixedIn<SampleType> =
+        FftFixedIn::new(sample_rate_in, sample_rate_out, CHUNK_SIZE, 1, 2).unwrap();
+
+    let mut samples_in: Vec<Vec<f64>> = vec![Vec::new(), Vec::new()];
+    let mut sample_deque = VecDeque::new();
+    let mut samples_out = resampler.output_buffer_allocate(true);
+
     let callback = move |data: &mut [T], cbinfo: &cpal::OutputCallbackInfo| {
-        write_audio(data, &mut consumer, channel_factor, &volume, cbinfo)
+        // Check if the input sample rate has updated from the decoder thread and if it has, recreate the resampler.
+        if sample_rate_update.update() {
+            let new_sample_rate_in = *sample_rate_update.read() as usize;
+            bypass_resampler = new_sample_rate_in == sample_rate_out;
+            resampler =
+                FftFixedIn::new(new_sample_rate_in, sample_rate_out, CHUNK_SIZE, 1, 2).unwrap();
+            samples_out = resampler.output_buffer_allocate(true);
+        }
+        while sample_deque.len() < data.len() {
+            let samples_needed = if bypass_resampler {
+                data.len()
+            } else {
+                resampler.input_frames_next() - samples_in[0].len()
+            };
+            for [l, r] in consumer.pop_iter().take(samples_needed) {
+                samples_in[0].push(l);
+                samples_in[1].push(r)
+            }
+            let (samples_out, consumed, output) = if bypass_resampler {
+                (&samples_in, samples_in[0].len(), samples_in[0].len())
+            } else {
+                let samples_needed = resampler.input_frames_next();
+                let samples_len = samples_in[0].len();
+                if samples_needed > samples_len {
+                    samples_in[0]
+                        .extend(std::iter::repeat(0f64).take(samples_needed - samples_len));
+                    samples_in[1]
+                        .extend(std::iter::repeat(0f64).take(samples_needed - samples_len));
+                }
+                let (consumed, output) = resampler
+                    .process_into_buffer(&mut samples_in, &mut samples_out, None)
+                    .unwrap();
+                (&samples_out, consumed, output)
+            };
+            for (l, r) in samples_out[0]
+                .iter()
+                .take(output)
+                .zip(samples_out[1].iter().take(output))
+            {
+                sample_deque.push_back(*l);
+                sample_deque.push_back(*r);
+            }
+            drop(samples_in[0].drain(0..consumed));
+            drop(samples_in[1].drain(0..consumed));
+        }
+        write_audio(data, &mut sample_deque, channel_factor, &volume, cbinfo);
     };
     let err_fn = move |e| {
         eprintln!("{e}");
@@ -658,54 +692,103 @@ where
 }
 
 fn stream_setup(
+    sample_rate_update: Output<u32>,
     volume: Arc<AtomicVolume>,
 ) -> (
     cpal::Stream,
     mpsc::Receiver<cpal::StreamError>,
-    impl Producer<Item = SampleType>,
-    u32,
+    impl Producer<Item = [SampleType; 2]>,
 ) {
     let (device, stream_config) = init_cpal();
-    let sample_rate = stream_config.sample_rate();
     let (producer, consumer) = {
-        let buf: HeapRb<f64> = HeapRb::new(BUFFER_SIZE);
+        let buf: HeapRb<[f64; 2]> = HeapRb::new(BUFFER_SIZE);
         buf.split()
     };
     let (stream_tx, stream_rx) = mpsc::channel::<cpal::StreamError>();
     let stream = match stream_config.sample_format() {
-        SampleFormat::I8 => {
-            create_stream::<i8>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::I16 => {
-            create_stream::<i16>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::I32 => {
-            create_stream::<i32>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::I64 => {
-            create_stream::<i64>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::U8 => {
-            create_stream::<u8>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::U16 => {
-            create_stream::<u16>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::U32 => {
-            create_stream::<u32>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::U64 => {
-            create_stream::<u64>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::F32 => {
-            create_stream::<f32>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
-        SampleFormat::F64 => {
-            create_stream::<f64>(device, &stream_config.into(), stream_tx, consumer, volume)
-        }
+        SampleFormat::I8 => create_stream::<i8>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::I16 => create_stream::<i16>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::I32 => create_stream::<i32>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::I64 => create_stream::<i64>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::U8 => create_stream::<u8>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::U16 => create_stream::<u16>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::U32 => create_stream::<u32>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::U64 => create_stream::<u64>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::F32 => create_stream::<f32>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
+        SampleFormat::F64 => create_stream::<f64>(
+            device,
+            &stream_config.into(),
+            sample_rate_update,
+            stream_tx,
+            consumer,
+            volume,
+        ),
 
         sample_format => panic!("Unsupported sample format: '{sample_format}'"),
     }
     .unwrap();
-    (stream, stream_rx, producer, sample_rate.0)
+    (stream, stream_rx, producer)
 }

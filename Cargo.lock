@@ -184,6 +184,7 @@ dependencies = [
  "symphonia",
  "symphonia-bundle-mp3",
  "thiserror 2.0.11",
+ "triple_buffer",
 ]
 
 [[package]]
@@ -5179,6 +5180,15 @@ checksum = "1ad61aed86bc3faea4300c7aee358b4c6d0c8d6ccc36524c96e4c92ccf26e77e"
 dependencies = [
  "num-integer",
  "strength_reduce",
+]
+
+[[package]]
+name = "triple_buffer"
+version = "8.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de7a7d39da903eaef0d0fd14aae8c8c36cdd7dc1d5a251f88c84b676e8dc0a14"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
