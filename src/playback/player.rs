@@ -34,7 +34,7 @@ use triple_buffer::{triple_buffer, Output};
 type SampleType = f64;
 /// The buffer stores `[f64; 2]` so the number of samples is double.
 const BUFFER_SIZE: usize = 2 * 1024;
-const CHUNK_SIZE: usize = 1 * 1024;
+const CHUNK_SIZE: usize = 1024;
 
 use crate::errors::{OutOfBoundsError, PlayerRunningError, SeekError};
 use crate::queue::{Queue, RepeatMode};
@@ -667,7 +667,7 @@ where
                         .extend(std::iter::repeat(0f64).take(samples_needed - samples_len));
                 }
                 let (consumed, output) = resampler
-                    .process_into_buffer(&mut samples_in, &mut samples_out, None)
+                    .process_into_buffer(&samples_in, &mut samples_out, None)
                     .unwrap();
                 (&samples_out, consumed, output)
             };
