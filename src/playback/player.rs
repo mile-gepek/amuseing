@@ -584,7 +584,6 @@ fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
         .default_output_config()
         .expect("A device should have a default config");
 
-    dbg!(stream_config.sample_format());
     (device, stream_config)
 }
 
