@@ -5,13 +5,14 @@ edition = "2021"
 
 [dependencies]
 cpal = "0.15.3"
+eframe = "0.31.1"
+egui = "0.31.1"
+egui_extras = "0.31.1"
 ringbuf = "0.4.7"
 rubato = "0.16.1"
-slint = "1.10.0"
+serde = { version = "1.0.219", features = ["derive"] }
 symphonia = "0.5.4"
 symphonia-bundle-mp3 = "0.5.4"
 thiserror = "2.0.11"
+toml = "0.8.20"
 triple_buffer = "8.1.0"
-
-[build-dependencies]
-slint-build = "1.10.0"
