@@ -1,21 +1,20 @@
 use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
     Sample, SampleFormat, SizedSample,
+    traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use ringbuf::{
-    traits::{Consumer, Observer, Producer, Split},
     HeapRb,
+    traits::{Consumer, Observer, Producer, Split},
 };
 use rubato::{FftFixedIn, Resampler};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     fmt::Debug,
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver},
-        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering}, mpsc::{self, Receiver}, Arc, Mutex, MutexGuard
     },
     thread,
     time::Duration,
@@ -29,12 +28,11 @@ use symphonia::core::{
     units,
 };
 use symphonia_bundle_mp3::{MpaDecoder, MpaReader};
-use triple_buffer::{triple_buffer, Output};
+use triple_buffer::{Output, triple_buffer};
 
 type SampleType = f64;
 /// The buffer stores `[f64; 2]` so the number of samples is double.
-const BUFFER_SIZE: usize = 2 * 1024;
-const CHUNK_SIZE: usize = 1024;
+const CHUNK_SIZE: usize = 512;
 
 use crate::errors::{OutOfBoundsError, PlayerRunningError, SeekError};
 use crate::queue::{Queue, RepeatMode};
@@ -116,20 +114,32 @@ impl Song {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Playlist {
+    name: String,
     path: PathBuf,
-    title: String,
-    icon_path: PathBuf,
+    icon_path: Option<PathBuf>,
 }
 
 impl Playlist {
-    pub fn new(path: PathBuf, title: String, icon_path: PathBuf) -> io::Result<Self> {
+    pub fn new(path: PathBuf, name: String, icon_path: Option<PathBuf>) -> io::Result<Self> {
         Ok(Self {
             path: path.canonicalize()?,
-            title,
+            name,
             icon_path,
         })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn icon_path(&self) -> Option<&Path> {
+        self.icon_path.as_ref().map(|v| &**v)
     }
 
     pub fn songs(&self) -> std::io::Result<Vec<Song>> {
@@ -148,23 +158,18 @@ impl Playlist {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PlayerState {
     Paused,
     Playing,
     Finished,
     NotStarted,
 }
-impl PlayerState {
-    pub fn is_playing(&self) -> bool {
-        matches!(self, Self::Playing | Self::Paused)
-    }
-}
 
 pub enum PlayerMessage {
     Stop,
-    Pause,
-    Resume,
+    // Pause,
+    // Resume,
     Seek(Duration),
     Quit,
 }
@@ -287,7 +292,7 @@ impl Player {
         }
     }
 
-    pub fn queue_mut(&mut self) -> MutexGuard<Queue<Song>> {
+    pub fn queue_mut(&self) -> MutexGuard<Queue<Song>> {
         self.queue.lock().unwrap()
     }
 
@@ -320,17 +325,9 @@ impl Player {
         matches!(state, PlayerState::Paused)
     }
 
-    /// Return a bool if the player is currently paused.
+    /// Return the state of the audio decoding thread.
     ///
-    /// The player might not be playing immediately after [`resume`].
-    ///
-    /// [`resume`]: Self::resume
-    pub fn is_playing(&self) -> bool {
-        let state = *self.state.lock().unwrap();
-        matches!(state, PlayerState::Playing)
-    }
-
-    /// Return the player's state at this moment.
+    /// NOTE: the metods `pause`, `resume`, `quit`, and `stop` don't update the state automatically so using this method may result in a race condition.
     pub fn state(&self) -> PlayerState {
         *self.state.lock().unwrap()
     }
@@ -338,43 +335,66 @@ impl Player {
     /// Send a message to the audio playing thread.
     ///
     /// Returns true on successful messages.
-    pub fn send_message(&self, message: PlayerMessage) -> bool {
+    pub fn send_message(&mut self, message: PlayerMessage) -> bool {
         let Some(tx) = &self.sender else { return false };
         tx.send(message).is_ok()
     }
 
     /// Send a message to the audio thread to quit playing entirely.
     ///
-    /// NOTE: the player's state is NOT updated to Finished by this call, but by the audio thread
-    pub fn quit(&self) -> bool {
+    /// NOTE: the player's state is NOT updated to Finished by this call, but by the audio thread.
+    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    ///
+    /// [`Player::state`]: Self::state
+    pub fn quit(&mut self) -> bool {
         self.send_message(PlayerMessage::Quit)
     }
 
     /// Send a message to the audio thread to stop the current song.
     ///
     /// If there are more songs available, they will be played.
-    pub fn stop(&self) -> bool {
+    ///
+    /// NOTE: the player's state is NOT updated to Finished (if there are no new songs) by this call, but by the audio thread.
+    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    ///
+    /// [`Player::state`]: Self::state
+    pub fn stop(&mut self) -> bool {
         self.send_message(PlayerMessage::Stop)
     }
 
     /// Send a message to the audio thread to pause playback.
     ///
     /// NOTE: the player's state is NOT updated to Paused by this call, but by the audio thread
-    pub fn pause(&self) -> bool {
-        self.send_message(PlayerMessage::Pause)
+    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    ///
+    /// [`Player::state`]: Self::state
+    pub fn pause(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        *state = PlayerState::Paused;
+
+        // self.send_message(PlayerMessage::Pause)
     }
 
     /// Send a message to the audio thread to resume playback.
     ///
     /// NOTE: the player's state is NOT updated to Playing by this call, but by the audio thread
-    pub fn resume(&self) -> bool {
-        self.send_message(PlayerMessage::Resume)
+    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    ///
+    /// [`Player::state`]: Self::state
+    pub fn resume(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        *state = PlayerState::Playing;
+
+        // self.send_message(PlayerMessage::Resume)
     }
 
     /// Start the player.
     ///
     /// This method spawns a seperate thread which continously decodes audio for the current song, and pushes it to a consumer for the cpal library to use
-    pub fn run(&mut self) -> Result<Receiver<PlayerUpdate>, PlayerRunningError> {
+    pub fn run(
+        &mut self,
+        buffer_size: usize,
+    ) -> Result<Receiver<PlayerUpdate>, PlayerRunningError> {
         {
             let mut state_lock = self.state.lock().unwrap();
             match *state_lock {
@@ -400,7 +420,7 @@ impl Player {
             let (mut sample_rate_update_input, mut sample_rate_update_output) =
                 triple_buffer(&last_song_sample_rate);
             let (mut stream, mut stream_rx, mut producer) =
-                stream_setup(sample_rate_update_output, volume.clone());
+                stream_setup(sample_rate_update_output, buffer_size, volume.clone());
             stream.play().unwrap();
             'main_loop: loop {
                 let song = {
@@ -424,27 +444,30 @@ impl Player {
                     *state_lock = PlayerState::Playing;
                 }
 
-                let mut playing = true;
                 let song_sample_rate = track.codec_params.sample_rate.unwrap();
                 if last_song_sample_rate != song_sample_rate {
                     sample_rate_update_input.write(song_sample_rate);
                     last_song_sample_rate = song_sample_rate;
                 }
 
-                let mut last_packet_ts = 0;
                 let mut sample_deque = VecDeque::new();
+
+                let mut playing = true;
                 'song_loop: loop {
                     match stream_rx.try_recv() {
                         // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
                         Ok(e) => {
-                            control_tx
-                                .send(PlayerMessage::Pause)
-                                .expect("control_rx should always be alive in the thread");
+                            {
+                                let mut state = player_state.lock().unwrap();
+                                *state = PlayerState::Paused;
+                            }
                             (sample_rate_update_input, sample_rate_update_output) =
                                 triple_buffer(&last_song_sample_rate);
-                            (stream, stream_rx, producer) =
-                                stream_setup(sample_rate_update_output, volume.clone());
-                            playing = false;
+                            (stream, stream_rx, producer) = stream_setup(
+                                sample_rate_update_output,
+                                buffer_size,
+                                volume.clone(),
+                            );
                             let _ = player_update_tx.send(PlayerUpdate::DeviceDisconnect);
                             println!("Got stream error: {e}");
                         }
@@ -455,24 +478,24 @@ impl Player {
                         match message {
                             PlayerMessage::Quit => break 'main_loop,
                             PlayerMessage::Stop => break 'song_loop,
-                            PlayerMessage::Pause => {
-                                {
-                                    let mut state_lock = player_state.lock().unwrap();
-                                    *state_lock = PlayerState::Paused;
-                                }
-                                playing = false;
-                                stream.pause().unwrap();
-                                // We can slow down the thread a bit if the player is paused
-                                thread::sleep(Duration::from_millis(100));
-                            }
-                            PlayerMessage::Resume => {
-                                {
-                                    let mut state_lock = player_state.lock().unwrap();
-                                    *state_lock = PlayerState::Playing;
-                                }
-                                stream.play().unwrap();
-                                playing = true;
-                            }
+                            // PlayerMessage::Pause => {
+                            //     {
+                            //         let mut state_lock = player_state.lock().unwrap();
+                            //         *state_lock = PlayerState::Paused;
+                            //     }
+                            //     playing = false;
+                            //     stream.pause().unwrap();
+                            //     // We can slow down the thread a bit if the player is paused
+                            //     thread::sleep(Duration::from_millis(100));
+                            // }
+                            // PlayerMessage::Resume => {
+                            //     {
+                            //         let mut state_lock = player_state.lock().unwrap();
+                            //         *state_lock = PlayerState::Playing;
+                            //     }
+                            //     stream.play().unwrap();
+                            //     playing = true;
+                            // }
                             PlayerMessage::Seek(dur) => {
                                 use symphonia::core::formats::{SeekMode, SeekTo};
                                 let time: units::Time = dur.into();
@@ -503,15 +526,29 @@ impl Player {
                             }
                         }
                     }
+                    {
+                        let state = player_state.lock().unwrap();
+                        if playing {
+                            if *state == PlayerState::Paused {
+                                playing = false;
+                                stream.pause().unwrap();
+                            }
+                        } else {
+                            if *state == PlayerState::Playing {
+                                playing = true;
+                                stream.play().unwrap();
+                            }
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                    }
                     if !playing {
+                        std::thread::sleep(Duration::from_millis(10));
                         continue;
                     }
 
                     if !sample_deque.is_empty() {
                         while !producer.is_full() {
                             let Some(sample) = sample_deque.pop_front() else {
-                                let dur: Duration = time_base.calc_time(last_packet_ts).into();
-                                time_playing.set_millis(dur.as_millis() as u64);
                                 break;
                             };
                             producer.try_push(sample).unwrap();
@@ -536,8 +573,10 @@ impl Player {
                             producer.try_push(pair).unwrap();
                         }
                         sample_deque.extend(sample_iter);
-                        last_packet_ts = packet.ts();
+                        let dur: Duration = time_base.calc_time(packet.ts()).into();
+                        time_playing.set_millis(dur.as_millis() as u64);
                     }
+                    std::thread::sleep(Duration::from_millis(5))
                 }
             }
         });
@@ -572,6 +611,11 @@ impl Player {
             self.queue_mut().rewind(1);
             self.stop();
         }
+    }
+
+    pub fn is_running(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        matches!(*state, PlayerState::Paused | PlayerState::Playing)
     }
 }
 
@@ -692,6 +736,7 @@ where
 
 fn stream_setup(
     sample_rate_update: Output<u32>,
+    buffer_size: usize,
     volume: Arc<AtomicVolume>,
 ) -> (
     cpal::Stream,
@@ -700,7 +745,7 @@ fn stream_setup(
 ) {
     let (device, stream_config) = init_cpal();
     let (producer, consumer) = {
-        let buf: HeapRb<[f64; 2]> = HeapRb::new(BUFFER_SIZE);
+        let buf: HeapRb<[f64; 2]> = HeapRb::new(buffer_size);
         buf.split()
     };
     let (stream_tx, stream_rx) = mpsc::channel::<cpal::StreamError>();
