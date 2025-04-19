@@ -5,9 +5,9 @@ edition = "2021"
 
 [dependencies]
 cpal = "0.15.3"
-eframe = "0.31.1"
+eframe = { version = "0.31.1", features = ["wgpu"] }
 egui = "0.31.1"
-egui_extras = "0.31.1"
+egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 ringbuf = "0.4.7"
 rubato = "0.16.1"
 serde = { version = "1.0.219", features = ["derive"] }

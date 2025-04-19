@@ -95,7 +95,7 @@ impl<'a> CenterControls<'a> {
 impl Widget for &mut CenterControls<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
-            let rewind_button = Button::image("../assets/button_icons/resume.svg");
+            let rewind_button = Button::image(include_image!("../assets/button_icons/rewind.png"));
             let size = (50., 50.);
             const NUM_BUTTONS: f32 = 3.;
             let spacing = &mut ui.spacing_mut().item_spacing.x;
@@ -106,9 +106,9 @@ impl Widget for &mut CenterControls<'_> {
                 self.player.rewind();
             }
             let img = if self.player.is_paused() {
-                include_image!("../assets/button_icons/resume.svg")
+                include_image!("../assets/button_icons/resume.png")
             } else {
-                include_image!("../assets/button_icons/pause.svg")
+                include_image!("../assets/button_icons/pause.png")
             };
             let pause_button = Button::image(img);
             if ui.add_sized(size, pause_button).clicked() {
@@ -119,7 +119,7 @@ impl Widget for &mut CenterControls<'_> {
                 }
             }
             let ff_button =
-                Button::image(include_image!("../assets/button_icons/fast-forward.svg"));
+                Button::image(include_image!("../assets/button_icons/fast-forward.png"));
             if ui.add_sized(size, ff_button).clicked() {
                 self.player.fast_forward();
             }
@@ -203,6 +203,7 @@ impl eframe::App for AmuseingApp {
 fn main() {
     let mut native_options = eframe::NativeOptions::default();
     native_options.viewport.resizable = Some(true);
+    native_options.renderer = eframe::Renderer::Wgpu;
     eframe::run_native(
         "Amuseing",
         native_options,
