@@ -1,7 +1,4 @@
-use std::{
-    fmt::Display,
-    ops::{Deref, DerefMut},
-};
+use std::fmt::Display;
 
 use crate::errors::OutOfBoundsError;
 
@@ -51,19 +48,6 @@ pub struct Queue<T> {
     pub repeat_mode: RepeatMode,
     /// Used for proper iteration after skipping/jumping, and initial `next` call
     has_advanced: bool,
-}
-
-impl<T> Deref for Queue<T> {
-    type Target = Vec<T>;
-    fn deref(&self) -> &Self::Target {
-        &self.items
-    }
-}
-
-impl<T> DerefMut for Queue<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.items
-    }
 }
 
 impl<T> Queue<T> {
@@ -117,6 +101,10 @@ impl<T> Queue<T> {
 
     pub fn index(&self) -> usize {
         self.index
+    }
+
+    pub fn push(&mut self, item: T) {
+        self.items.push(item);
     }
 
     /// Remove the value at position `index`, calling [`Vec::remove`] internally.
@@ -194,6 +182,12 @@ impl<T> Queue<T> {
     /// Return a reference to the element that was last returned.
     pub fn current(&self) -> Option<&T> {
         self.items.get(self.index)
+    }
+}
+
+impl<T> Extend<T> for Queue<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        self.items.extend(iter);
     }
 }
 

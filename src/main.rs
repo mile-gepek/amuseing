@@ -1,8 +1,12 @@
-use core::f32;
-use std::{path::PathBuf, time::Duration};
+use std::{sync::mpsc::Receiver, time::Duration};
 
-use amuseing::{config::Config, playback::Player, queue::Queue};
-use egui::{include_image, Button, FontData, FontDefinitions, Widget};
+use amuseing::{
+    config::Config,
+    errors::PlayerStartError,
+    playback::{Player, PlayerUpdate, Song},
+    queue::Queue,
+};
+use egui::{include_image, Button, FontData, FontDefinitions, Ui, Widget};
 
 struct SeekBar<'a> {
     player: &'a mut Player,
@@ -40,24 +44,9 @@ impl Widget for &mut SeekBar<'_> {
                 time_playing.as_secs_f64() / current_duration.as_secs_f64()
             };
             let show_hours = current_duration.as_secs_f32() as u32 / 3600 > 0;
-            let time_playing_label =
-                egui::Label::new(format_time(time_playing.as_secs_f64() as u32, show_hours));
-            let duration_label = egui::Label::new(format_time(
-                current_duration.as_secs_f64() as u32,
-                show_hours,
-            ));
-            let label_size = (60., ui.available_height());
-            let width = ui.available_width();
-            let slider_width = ui.available_width() * 0.5;
-            let item_spacing_x = ui.spacing().item_spacing.x;
-            // let slider_width = ui.available_width() - 2. * label_size.0 - 2. * item_spacing_x;
-            ui.style_mut().spacing.slider_width = slider_width;
-            let space_leftover = width - slider_width - 2. * label_size.0 - 2. * item_spacing_x;
-            ui.add_space(space_leftover * 0.5);
-            ui.add_sized(label_size, time_playing_label);
             let slider = egui::Slider::new(&mut percent, 0f64..=1f64).show_value(false);
+            ui.style_mut().spacing.slider_width = ui.available_width();
             let resp = ui.add(slider);
-            ui.add(duration_label);
             if resp.drag_stopped() {
                 let seek_dur = current_duration.mul_f64(percent);
                 time_playing.set_millis(seek_dur.as_millis() as u64);
@@ -79,6 +68,16 @@ impl Widget for &mut SeekBar<'_> {
             }
         })
         .response
+    }
+}
+
+struct SongButton<'a>(&'a Song);
+
+impl Widget for SongButton<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let size = ui.available_size();
+        let button = Button::new(self.0.title()).min_size(size);
+        ui.add(button)
     }
 }
 
@@ -129,8 +128,10 @@ impl Widget for &mut CenterControls<'_> {
 }
 
 struct AmuseingApp {
-    player: Option<Player>,
+    player: Player,
     config: Config,
+    selected_playlist_songs: Option<Vec<Song>>,
+    player_update: Option<Receiver<PlayerUpdate>>,
 }
 
 impl AmuseingApp {
@@ -160,34 +161,67 @@ impl AmuseingApp {
         let config = Config::default();
         let playlist = &config.playlists[0];
         let songs = playlist.songs().unwrap();
-        let mut queue = Queue::new(amuseing::queue::RepeatMode::All);
-        queue.extend(songs.into_iter());
-        let mut player = Player::with_queue(queue, config.player.volume);
-        let _ = player.run(config.player.buffer_size);
-        Self {
-            player: Some(player),
-            config,
+        let selected_playlist_songs = songs.clone();
+        let mut player = Player::new(config.player.volume);
+        {
+            let mut queue = player.queue_mut();
+            *queue = Queue::new(amuseing::queue::RepeatMode::All);
+            queue.extend(songs.into_iter());
         }
+        let player_update = player.run(config.player.buffer_size).ok();
+        Self {
+            player,
+            config,
+            selected_playlist_songs: Some(selected_playlist_songs),
+            player_update,
+        }
+    }
+
+    pub fn start_new_player(
+        &mut self,
+        songs: Vec<Song>,
+        song_idx: usize,
+    ) -> Result<(), PlayerStartError> {
+        let mut new_player = Player::new(self.config.player.volume);
+        let curr_repeat_mode = self.player.queue_mut().repeat_mode;
+        {
+            let mut queue = new_player.queue_mut();
+            *queue = Queue::new(curr_repeat_mode);
+            queue.extend(songs);
+            queue
+                .jump(song_idx)
+                .expect("Should be able to jump to a song which is displayed in the ui");
+        }
+        let player_update = new_player.run(self.config.player.buffer_size)?;
+        self.player_update = Some(player_update);
+        self.player = new_player;
+        Ok(())
+    }
+
+    fn try_start_new_player(&mut self, ui: &mut Ui, songs: Vec<Song>, idx: usize) {
+        if self.start_new_player(songs.clone(), idx).is_err() {
+            //TODO: show popup with a display message saying yada yada
+        };
     }
 }
 
 impl eframe::App for AmuseingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(player) = self.player.as_mut() {
-            let controls_panel =
-                egui::TopBottomPanel::bottom("Player controls panel").exact_height(105.);
-            controls_panel.show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(15.);
-                    let seek_bar = &mut SeekBar::new(player);
-                    ui.add(seek_bar);
-                    ui.columns_const(|[song_display_ui, center_controls_ui, volume_controls]| {
+        let player = &mut self.player;
+        let controls_panel =
+            egui::TopBottomPanel::bottom("Player controls panel").exact_height(105.);
+        controls_panel.show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                let seek_bar = &mut SeekBar::new(player);
+                ui.add(seek_bar);
+                ui.columns_const(
+                    |[song_display_ui, center_controls_ui, volume_controls_ui]| {
                         let mut center_controls = CenterControls::new(player);
                         center_controls_ui.add(&mut center_controls);
-                    });
-                });
+                    },
+                );
             });
-        }
+        });
         let playlist_panel =
             egui::SidePanel::left("Playlist tab").width_range(egui::Rangef::new(300., 500.));
         playlist_panel.show(ctx, |ui| {
@@ -196,10 +230,35 @@ impl eframe::App for AmuseingApp {
             }
         });
         let central_panel = egui::CentralPanel::default();
-        central_panel.show(ctx, |ui| {});
+        central_panel.show(ctx, |ui| {
+            if let Some(songs) = self.selected_playlist_songs.clone() {
+                let total_rows = songs.len();
+                const SONGS_SHOWN: f32 = 10.;
+                let row_height = ui.available_height() / SONGS_SHOWN;
+                egui::ScrollArea::vertical().show_rows(
+                    ui,
+                    row_height,
+                    total_rows,
+                    |ui, row_range| {
+                        for (idx, song) in songs[row_range].iter().enumerate() {
+                            let button_resp = ui.add(SongButton(&song));
+                            if button_resp.clicked() {
+                                self.try_start_new_player(ui, songs.clone(), idx);
+                            }
+                            button_resp.context_menu(|ui| {
+                                if ui.button("Play this song").clicked() {
+                                    self.try_start_new_player(ui, songs.clone(), idx);
+                                }
+                            });
+                        }
+                    },
+                );
+            } else {
+                ui.centered_and_justified(|ui| ui.label("No playlist selected"));
+            }
+        });
     }
 }
-
 fn main() {
     let mut native_options = eframe::NativeOptions::default();
     native_options.viewport.resizable = Some(true);

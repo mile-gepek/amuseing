@@ -1,10 +1,10 @@
 use cpal::{
-    Sample, SampleFormat, SizedSample,
     traits::{DeviceTrait, HostTrait, StreamTrait},
+    Sample, SampleFormat, SizedSample,
 };
 use ringbuf::{
-    HeapRb,
     traits::{Consumer, Observer, Producer, Split},
+    HeapRb,
 };
 use rubato::{FftFixedIn, Resampler};
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,9 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering}, mpsc::{self, Receiver}, Arc, Mutex, MutexGuard
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver},
+        Arc, Mutex, MutexGuard,
     },
     thread,
     time::Duration,
@@ -28,13 +30,13 @@ use symphonia::core::{
     units,
 };
 use symphonia_bundle_mp3::{MpaDecoder, MpaReader};
-use triple_buffer::{Output, triple_buffer};
+use triple_buffer::{triple_buffer, Output};
 
 type SampleType = f64;
 /// The buffer stores `[f64; 2]` so the number of samples is double.
 const CHUNK_SIZE: usize = 512;
 
-use crate::errors::{OutOfBoundsError, PlayerRunningError, SeekError};
+use crate::errors::{OutOfBoundsError, PlayerStartError, SeekError};
 use crate::queue::{Queue, RepeatMode};
 
 /// Represents a song from a [`Player`]s queue.
@@ -254,7 +256,7 @@ pub enum PlayerUpdate {
     SongChange { song: Option<Song>, index: usize },
     DeviceDisconnect,
     // DeviceChange(),
-    StateChange,
+    // StateChange,
 }
 impl PlayerUpdate {
     fn song_change(index: usize, song: Option<Song>) -> PlayerUpdate {
@@ -282,13 +284,6 @@ impl Player {
             sender: None,
             time_playing: AtomicMilliseconds::default().into(),
             volume: AtomicVolume::from_percent(volume).into(),
-        }
-    }
-
-    pub fn with_queue(queue: Queue<Song>, volume: f64) -> Self {
-        Self {
-            queue: Arc::new(Mutex::new(queue)),
-            ..Player::new(volume)
         }
     }
 
@@ -391,14 +386,13 @@ impl Player {
     /// Start the player.
     ///
     /// This method spawns a seperate thread which continously decodes audio for the current song, and pushes it to a consumer for the cpal library to use
-    pub fn run(
-        &mut self,
-        buffer_size: usize,
-    ) -> Result<Receiver<PlayerUpdate>, PlayerRunningError> {
+    pub fn run(&mut self, buffer_size: usize) -> Result<Receiver<PlayerUpdate>, PlayerStartError> {
         {
             let mut state_lock = self.state.lock().unwrap();
             match *state_lock {
-                PlayerState::Playing | PlayerState::Paused => return Err(PlayerRunningError),
+                PlayerState::Playing | PlayerState::Paused => {
+                    return Err(PlayerStartError::AlreadyStarted)
+                }
                 _ => {}
             }
             *state_lock = PlayerState::Paused;
@@ -616,6 +610,12 @@ impl Player {
     pub fn is_running(&self) -> bool {
         let state = self.state.lock().unwrap();
         matches!(*state, PlayerState::Paused | PlayerState::Playing)
+    }
+}
+
+impl Drop for Player {
+    fn drop(&mut self) {
+        self.quit();
     }
 }
 

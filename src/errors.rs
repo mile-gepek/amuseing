@@ -6,8 +6,10 @@ use thiserror::Error;
 ///
 /// [`Player::run`]: crate::playback::Player::run
 #[derive(Debug, Error)]
-#[error("The player is already running")]
-pub struct PlayerRunningError;
+pub enum PlayerStartError {
+    #[error("The player is already running")]
+    AlreadyStarted,
+}
 
 /// Returned when [`Player::seek_duration`] fails.
 ///
