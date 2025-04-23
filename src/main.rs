@@ -77,6 +77,7 @@ impl Widget for SongButton<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let size = ui.available_size();
         let button = Button::new(self.0.title()).min_size(size);
+        dbg!(size);
         ui.add(button)
     }
 }
@@ -94,7 +95,7 @@ impl<'a> CenterControls<'a> {
 impl Widget for &mut CenterControls<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
-            let rewind_button = Button::image(include_image!("../assets/button_icons/rewind.png"));
+            let rewind_button = Button::image(include_image!("../assets/button_icons/rewind.svg"));
             let size = (50., 50.);
             const NUM_BUTTONS: f32 = 3.;
             let spacing = &mut ui.spacing_mut().item_spacing.x;
@@ -105,9 +106,9 @@ impl Widget for &mut CenterControls<'_> {
                 self.player.rewind();
             }
             let img = if self.player.is_paused() {
-                include_image!("../assets/button_icons/resume.png")
+                include_image!("../assets/button_icons/resume.svg")
             } else {
-                include_image!("../assets/button_icons/pause.png")
+                include_image!("../assets/button_icons/pause.svg")
             };
             let pause_button = Button::image(img);
             if ui.add_sized(size, pause_button).clicked() {
@@ -118,7 +119,7 @@ impl Widget for &mut CenterControls<'_> {
                 }
             }
             let ff_button =
-                Button::image(include_image!("../assets/button_icons/fast-forward.png"));
+                Button::image(include_image!("../assets/button_icons/fast-forward.svg"));
             if ui.add_sized(size, ff_button).clicked() {
                 self.player.fast_forward();
             }
@@ -209,11 +210,13 @@ impl eframe::App for AmuseingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let player = &mut self.player;
         let controls_panel =
-            egui::TopBottomPanel::bottom("Player controls panel").exact_height(105.);
+            egui::TopBottomPanel::bottom("Player controls panel").exact_height(100.);
         controls_panel.show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 let seek_bar = &mut SeekBar::new(player);
+                ui.add_space(5.);
                 ui.add(seek_bar);
+                ui.add_space(5.);
                 ui.columns_const(
                     |[song_display_ui, center_controls_ui, volume_controls_ui]| {
                         let mut center_controls = CenterControls::new(player);
@@ -234,8 +237,9 @@ impl eframe::App for AmuseingApp {
             if let Some(songs) = self.selected_playlist_songs.clone() {
                 let total_rows = songs.len();
                 const SONGS_SHOWN: f32 = 10.;
-                let row_height = ui.available_height() / SONGS_SHOWN;
-                egui::ScrollArea::vertical().show_rows(
+                let row_height = ui.available_height() / SONGS_SHOWN as f32;
+                dbg!(row_height);
+                egui::ScrollArea::vertical().animated(true).show_rows(
                     ui,
                     row_height,
                     total_rows,
