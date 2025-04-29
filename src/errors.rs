@@ -8,7 +8,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum PlayerStartError {
     #[error("The player is already running")]
-    AlreadyStarted,
+    Running,
 }
 
 /// Returned when [`Player::seek_duration`] fails.
