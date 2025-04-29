@@ -391,7 +391,7 @@ impl Player {
             let mut state_lock = self.state.lock().unwrap();
             match *state_lock {
                 PlayerState::Playing | PlayerState::Paused => {
-                    return Err(PlayerStartError::AlreadyStarted)
+                    return Err(PlayerStartError::Running)
                 }
                 _ => {}
             }
@@ -574,6 +574,10 @@ impl Player {
                 }
             }
         });
+        {
+            let mut state_lock = self.state.lock().unwrap();
+            *state_lock = PlayerState::Finished;
+        }
         Ok(player_update_rx)
     }
 

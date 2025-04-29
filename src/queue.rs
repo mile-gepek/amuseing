@@ -99,6 +99,10 @@ impl<T> Queue<T> {
         self.items.get(self.index)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     pub fn index(&self) -> usize {
         self.index
     }

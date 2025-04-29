@@ -3,7 +3,7 @@ use std::{sync::mpsc::Receiver, time::Duration};
 use amuseing::{
     config::Config,
     errors::PlayerStartError,
-    playback::{Player, PlayerUpdate, Song},
+    playback::{Player, PlayerUpdate, Playlist, Song},
     queue::Queue,
 };
 use egui::{include_image, Button, FontData, FontDefinitions, Ui, Widget};
@@ -71,13 +71,42 @@ impl Widget for &mut SeekBar<'_> {
     }
 }
 
-struct SongButton<'a>(&'a Song);
+struct PlaylistButton<'a> {
+    playlist: &'a Playlist,
+    height: f32,
+}
+
+impl<'a> PlaylistButton<'a> {
+    fn new(playlist: &'a Playlist, height: f32) -> Self {
+        Self { playlist, height }
+    }
+}
+
+impl Widget for PlaylistButton<'_> {
+    fn ui(self, ui: &mut Ui) -> egui::Response {
+        let mut size = ui.available_size();
+        size.y = self.height;
+        let button = Button::new(self.playlist.name()).min_size(size);
+        ui.add(button)
+    }
+}
+
+struct SongButton<'a> {
+    song: &'a Song,
+    height: f32,
+}
+
+impl<'a> SongButton<'a> {
+    fn new(song: &'a Song, height: f32) -> Self {
+        Self { song, height }
+    }
+}
 
 impl Widget for SongButton<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let size = ui.available_size();
-        let button = Button::new(self.0.title()).min_size(size);
-        dbg!(size);
+        let mut size = ui.available_size();
+        size.y = self.height;
+        let button = Button::new(self.song.title()).min_size(size);
         ui.add(button)
     }
 }
@@ -137,6 +166,8 @@ struct AmuseingApp {
 
 impl AmuseingApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let mut fonts = FontDefinitions::default();
         fonts.font_data.insert(
@@ -193,13 +224,19 @@ impl AmuseingApp {
                 .jump(song_idx)
                 .expect("Should be able to jump to a song which is displayed in the ui");
         }
-        let player_update = new_player.run(self.config.player.buffer_size)?;
-        self.player_update = Some(player_update);
         self.player = new_player;
-        Ok(())
+        let player_update = self.player.run(self.config.player.buffer_size);
+        player_update.map(|update| {
+            self.player_update = Some(update);
+            ()
+        })
     }
 
     fn try_start_new_player(&mut self, ui: &mut Ui, songs: Vec<Song>, idx: usize) {
+        if songs.is_empty() {
+            // FIXME: this is kinda dumb
+            return;
+        }
         if self.start_new_player(songs.clone(), idx).is_err() {
             //TODO: show popup with a display message saying yada yada
         };
@@ -225,38 +262,68 @@ impl eframe::App for AmuseingApp {
                 );
             });
         });
-        let playlist_panel =
-            egui::SidePanel::left("Playlist tab").width_range(egui::Rangef::new(300., 500.));
+
+        let playlist_panel = egui::SidePanel::left("Playlist tab")
+            .width_range(egui::Rangef::new(150., 500.))
+            .default_width(200.);
         playlist_panel.show(ctx, |ui| {
-            for playlist in self.config.playlists.iter() {
-                let _ = ui.button(playlist.name());
-            }
+            let total_rows = self.config.playlists.len();
+            const PLAYLISTS_SHOWN: f32 = 10.;
+            let row_height = ui.available_height() / PLAYLISTS_SHOWN;
+            egui::ScrollArea::vertical().animated(true).show_rows(
+                ui,
+                row_height,
+                total_rows,
+                |ui, row_range| {
+                    for (idx, playlist) in self.config.playlists.iter().enumerate() {
+                        if ui.add(PlaylistButton::new(&playlist, row_height)).clicked() {
+                            self.selected_playlist_songs = playlist.songs().ok();
+                            if self.selected_playlist_songs.is_none() {
+                                egui::containers::popup::show_tooltip_at(
+                                    ui.ctx(),
+                                    ui.layer_id(),
+                                    ui.id(),
+                                    (0., 0.).into(),
+                                    |ui| {
+                                        ui.label("kurcina");
+                                    },
+                                );
+                            }
+                        }
+                    }
+                },
+            )
         });
         let central_panel = egui::CentralPanel::default();
         central_panel.show(ctx, |ui| {
             if let Some(songs) = self.selected_playlist_songs.clone() {
-                let total_rows = songs.len();
-                const SONGS_SHOWN: f32 = 10.;
-                let row_height = ui.available_height() / SONGS_SHOWN as f32;
-                dbg!(row_height);
-                egui::ScrollArea::vertical().animated(true).show_rows(
-                    ui,
-                    row_height,
-                    total_rows,
-                    |ui, row_range| {
-                        for (idx, song) in songs[row_range].iter().enumerate() {
-                            let button_resp = ui.add(SongButton(&song));
-                            if button_resp.clicked() {
-                                self.try_start_new_player(ui, songs.clone(), idx);
-                            }
-                            button_resp.context_menu(|ui| {
-                                if ui.button("Play this song").clicked() {
+                if songs.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        ui.label("This playlist doesn't have any songs")
+                    });
+                } else {
+                    let total_rows = songs.len();
+                    const SONGS_SHOWN: f32 = 10.;
+                    let row_height = ui.available_height() / SONGS_SHOWN;
+                    egui::ScrollArea::vertical().animated(true).show_rows(
+                        ui,
+                        row_height,
+                        total_rows,
+                        |ui, row_range| {
+                            for (idx, song) in songs[row_range].iter().enumerate() {
+                                let button_resp = ui.add(SongButton::new(&song, row_height));
+                                if button_resp.clicked() {
                                     self.try_start_new_player(ui, songs.clone(), idx);
                                 }
-                            });
-                        }
-                    },
-                );
+                                button_resp.context_menu(|ui| {
+                                    if ui.button("Play this song").clicked() {
+                                        self.try_start_new_player(ui, songs.clone(), idx);
+                                    }
+                                });
+                            }
+                        },
+                    );
+                }
             } else {
                 ui.centered_and_justified(|ui| ui.label("No playlist selected"));
             }
@@ -265,7 +332,10 @@ impl eframe::App for AmuseingApp {
 }
 fn main() {
     let mut native_options = eframe::NativeOptions::default();
-    native_options.viewport.resizable = Some(true);
+    native_options.viewport = egui::ViewportBuilder::default()
+        .with_min_inner_size((600., 400.))
+        .with_title("amuseing")
+        .with_resizable(true);
     native_options.renderer = eframe::Renderer::Wgpu;
     eframe::run_native(
         "Amuseing",
