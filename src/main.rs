@@ -269,7 +269,7 @@ impl eframe::App for AmuseingApp {
 
         let playlist_panel_width = (window_width * 0.3).clamp(200., 500.);
         let playlist_panel =
-            egui::SidePanel::left("Playlist tab").exact_width(playlist_panel_width);
+            egui::SidePanel::left("Playlist tab").exact_width(playlist_panel_width).resizable(false);
         playlist_panel.show(ctx, |ui| {
             let total_rows = self.config.playlists.len();
             // const PLAYLISTS_SHOWN: f32 = 10.;
