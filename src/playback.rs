@@ -707,6 +707,9 @@ where
             } else {
                 let samples_needed = resampler.input_frames_next();
                 let samples_len = samples_in[0].len();
+                // Rubato docs say to pad inputs with zeroes instead of using `process_partial_into_buffer`,
+                // and this should really only occur when we're completely out of samples.
+                // Theoretically, we're at the mercy of the OS scheduler to allow the decoder thread to push enough samples fast enough
                 if samples_needed > samples_len {
                     samples_in[0]
                         .extend(std::iter::repeat(0f64).take(samples_needed - samples_len));
@@ -738,6 +741,36 @@ where
     device.build_output_stream(stream_config, callback, err_fn, None)
 }
 
+// TODO: improve this so changing arguments doesn't require adding extra parameters
+macro_rules! impl_create_stream {
+    (
+        $device:expr,
+        $config:expr,
+        $sample_rate_update:expr,
+        $stream_tx:expr,
+        $consumer:expr,
+        $volume:expr,
+        [
+            $($p:ident => $t:ty),+
+            $(,)?
+        ]
+    ) => {
+            {
+            match $config.sample_format() {
+                $(SampleFormat::$p => create_stream::<$t>(
+                    $device,
+                    &($config).into(),
+                    $sample_rate_update,
+                    $stream_tx,
+                    $consumer,
+                    $volume,
+                )),+,
+                format => panic!("Unsupported format {format:?}"),
+            }.unwrap()
+        }
+    }
+}
+
 fn stream_setup(
     sample_rate_update: Output<u32>,
     buffer_size: usize,
@@ -753,90 +786,25 @@ fn stream_setup(
         buf.split()
     };
     let (stream_tx, stream_rx) = mpsc::channel::<cpal::StreamError>();
-    let stream = match stream_config.sample_format() {
-        SampleFormat::I8 => create_stream::<i8>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::I16 => create_stream::<i16>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::I32 => create_stream::<i32>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::I64 => create_stream::<i64>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::U8 => create_stream::<u8>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::U16 => create_stream::<u16>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::U32 => create_stream::<u32>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::U64 => create_stream::<u64>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::F32 => create_stream::<f32>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-        SampleFormat::F64 => create_stream::<f64>(
-            device,
-            &stream_config.into(),
-            sample_rate_update,
-            stream_tx,
-            consumer,
-            volume,
-        ),
-
-        sample_format => panic!("Unsupported sample format: '{sample_format}'"),
-    }
-    .unwrap();
+    let stream = impl_create_stream!(
+        device,
+        stream_config,
+        sample_rate_update,
+        stream_tx,
+        consumer,
+        volume,
+        [
+            I8 => i8,
+            I16 => i16,
+            I32 => i32,
+            I64 => i64,
+            U8 => u8,
+            U16 => u16,
+            U32 => u32,
+            U64 => u64,
+            F32 => f32,
+            F64 => f64,
+        ]
+    );
     (stream, stream_rx, producer)
 }
