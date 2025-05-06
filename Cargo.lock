@@ -168,6 +168,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "egui_flex",
  "ringbuf",
  "rubato",
  "serde",
@@ -1051,6 +1052,15 @@ dependencies = [
  "mime_guess2",
  "profiling",
  "resvg",
+]
+
+[[package]]
+name = "egui_flex"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d2598b8bd01a7bfdaede32b297e5ba671640d4220f6c353025042a82cefee6e"
+dependencies = [
+ "egui",
 ]
 
 [[package]]

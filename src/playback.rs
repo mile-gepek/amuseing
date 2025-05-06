@@ -50,14 +50,14 @@ use crate::queue::{Queue, RepeatMode};
 /// The duration of the song is automatically calculated when created.
 #[derive(Clone, Debug)]
 pub struct Song {
-    id: u32,
+    id: usize,
     title: String,
     path: PathBuf,
     duration: Duration,
 }
 
 impl Song {
-    fn new(id: u32, title: String, path: PathBuf, duration: Duration) -> Self {
+    fn new(id: usize, title: String, path: PathBuf, duration: Duration) -> Self {
         Self {
             id,
             title,
@@ -66,7 +66,7 @@ impl Song {
         }
     }
 
-    pub fn id(&self) -> &u32 {
+    pub fn id(&self) -> &usize {
         &self.id
     }
 
@@ -91,7 +91,7 @@ impl Song {
             .expect("Every mp3 track should have a time base");
         let n_frames = params.n_frames.expect("Every mp3 track should have frames");
         let duration = time_base.calc_time(n_frames).into();
-        Ok(Self::new(track.id, title, path, duration))
+        Ok(Self::new(track.id as usize, title, path, duration))
     }
 
     // Feels kinda dumb to have to get a reader for duration, and later for actually reading the data
@@ -120,16 +120,31 @@ impl Song {
 pub struct Playlist {
     name: String,
     path: PathBuf,
+    #[serde(skip)]
+    exists: bool,
     icon_path: Option<PathBuf>,
 }
 
 impl Playlist {
     pub fn new(path: PathBuf, name: String, icon_path: Option<PathBuf>) -> io::Result<Self> {
+        let path = path.canonicalize()?;
+        dbg!(&path.exists());
         Ok(Self {
-            path: path.canonicalize()?,
+            exists: path.exists(),
+            path,
             name,
             icon_path,
         })
+    }
+
+    /// Check and update the internal bool if the path exists on the system, returns that same result
+    pub fn check_exists(&mut self) -> bool {
+        self.exists = self.path.exists();
+        self.exists
+    }
+
+    pub fn exists(&self) -> bool {
+        self.exists
     }
 
     pub fn name(&self) -> &str {

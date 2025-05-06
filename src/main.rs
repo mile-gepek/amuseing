@@ -8,6 +8,9 @@ use amuseing::{
 };
 use egui::{include_image, Button, FontData, FontDefinitions, Ui, Widget};
 
+const BUTTON_CORNER_RADIUS: u8 = 10;
+const BUTTON_SPACING: f32 = 5.;
+
 struct SeekBar<'a> {
     player: &'a mut Player,
 }
@@ -74,31 +77,58 @@ impl Widget for &mut SeekBar<'_> {
 struct PlaylistButton<'a> {
     playlist: &'a Playlist,
     height: f32,
+    selected: bool,
 }
 
 impl<'a> PlaylistButton<'a> {
-    fn new(playlist: &'a Playlist, height: f32) -> Self {
-        Self { playlist, height }
+    fn new(playlist: &'a Playlist, height: f32, selected: bool) -> Self {
+        Self {
+            playlist,
+            height,
+            selected,
+        }
     }
 }
 
 impl Widget for PlaylistButton<'_> {
     fn ui(self, ui: &mut Ui) -> egui::Response {
-        let mut size = ui.available_size();
-        size.y = self.height;
-        let button = Button::new(self.playlist.name()).min_size(size);
-        ui.add(button)
+        // Somehow this horizontal wrapper fixes a bug with setting ui stroke color, I can't explain
+        ui.vertical(|ui| {
+            let mut size = ui.available_size();
+            size.y = self.height;
+            let image = if !self.playlist.exists() {
+                ui.style_mut().visuals.selection.stroke.color =
+                    egui::Color32::from_rgb(255, 165, 0);
+                Some(
+                    egui::Image::new(include_image!("../assets/button_icons/warning.svg"))
+                        .max_size(egui::Vec2::new(50., 50.)),
+                )
+            } else {
+                None
+            };
+            let button = Button::opt_image_and_text(image, Some(self.playlist.name().into()))
+                .min_size(size)
+                .selected(self.selected || !self.playlist.exists())
+                .corner_radius(BUTTON_CORNER_RADIUS);
+            ui.add(button)
+        })
+        .inner
     }
 }
 
 struct SongButton<'a> {
     song: &'a Song,
     height: f32,
+    selected: bool,
 }
 
 impl<'a> SongButton<'a> {
-    fn new(song: &'a Song, height: f32) -> Self {
-        Self { song, height }
+    fn new(song: &'a Song, height: f32, selected: bool) -> Self {
+        Self {
+            song,
+            height,
+            selected,
+        }
     }
 }
 
@@ -106,7 +136,10 @@ impl Widget for SongButton<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let mut size = ui.available_size();
         size.y = self.height;
-        let button = Button::new(self.song.title()).min_size(size);
+        let button = Button::new(self.song.title())
+            .min_size(size)
+            .selected(self.selected)
+            .corner_radius(BUTTON_CORNER_RADIUS);
         ui.add(button)
     }
 }
@@ -157,15 +190,30 @@ impl Widget for &mut CenterControls<'_> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct UiPlaylistInfo {
+    selected: Option<(usize, Vec<Song>)>,
+    active: Option<(usize, usize)>,
+}
+
 struct AmuseingApp {
     player: Player,
     config: Config,
-    selected_playlist_songs: Option<Vec<Song>>,
+    ui_playlist_info: UiPlaylistInfo,
     player_update: Option<Receiver<PlayerUpdate>>,
 }
 
 impl AmuseingApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.style_mut(|style| {
+            use egui::{Color32, CornerRadius};
+            let corner_radius = CornerRadius::same(0);
+            style.visuals.widgets.inactive.corner_radius = corner_radius;
+            style.visuals.widgets.active.corner_radius = corner_radius;
+            style.visuals.widgets.hovered.corner_radius = corner_radius;
+            style.visuals.selection.bg_fill = style.visuals.widgets.inactive.bg_fill;
+            style.visuals.selection.stroke.color = Color32::from_gray(255);
+        });
         cc.egui_ctx.set_theme(egui::Theme::Dark);
 
         egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -193,7 +241,10 @@ impl AmuseingApp {
         let config = Config::default();
         let playlist = &config.playlists[0];
         let songs = playlist.songs().unwrap();
-        let selected_playlist_songs = songs.clone();
+        let ui_playlist_info = UiPlaylistInfo {
+            selected: None,
+            active: Some((0, 0)),
+        };
         let mut player = Player::new(config.player.volume);
         {
             let mut queue = player.queue_mut();
@@ -204,7 +255,7 @@ impl AmuseingApp {
         Self {
             player,
             config,
-            selected_playlist_songs: Some(selected_playlist_songs),
+            ui_playlist_info,
             player_update,
         }
     }
@@ -214,7 +265,7 @@ impl AmuseingApp {
         songs: Vec<Song>,
         song_idx: usize,
     ) -> Result<(), PlayerStartError> {
-        let mut new_player = Player::new(self.config.player.volume);
+        let new_player = Player::new(self.config.player.volume);
         let curr_repeat_mode = self.player.queue_mut().repeat_mode;
         {
             let mut queue = new_player.queue_mut();
@@ -232,13 +283,21 @@ impl AmuseingApp {
         })
     }
 
-    fn try_start_new_player(&mut self, ui: &mut Ui, songs: Vec<Song>, idx: usize) {
+    fn try_start_new_player(
+        &mut self,
+        ui: &mut Ui,
+        songs: Vec<Song>,
+        playlist_idx: usize,
+        song_idx: usize,
+    ) {
         if songs.is_empty() {
             // FIXME: this is kinda dumb
             return;
         }
-        if self.start_new_player(songs.clone(), idx).is_err() {
+        if self.start_new_player(songs.clone(), song_idx).is_err() {
             //TODO: show popup with a display message saying yada yada
+        } else {
+            self.ui_playlist_info.active = Some((playlist_idx, song_idx));
         };
     }
 }
@@ -268,8 +327,9 @@ impl eframe::App for AmuseingApp {
         });
 
         let playlist_panel_width = (window_width * 0.3).clamp(200., 500.);
-        let playlist_panel =
-            egui::SidePanel::left("Playlist tab").exact_width(playlist_panel_width).resizable(false);
+        let playlist_panel = egui::SidePanel::left("Playlist tab")
+            .exact_width(playlist_panel_width)
+            .resizable(false);
         playlist_panel.show(ctx, |ui| {
             let total_rows = self.config.playlists.len();
             // const PLAYLISTS_SHOWN: f32 = 10.;
@@ -280,12 +340,29 @@ impl eframe::App for AmuseingApp {
                 ROW_HEIGHT,
                 total_rows,
                 |ui, row_range| {
-                    for (playlist_idx, playlist) in
-                        self.config.playlists[row_range].iter().enumerate()
-                    {
-                        if ui.add(PlaylistButton::new(&playlist, ROW_HEIGHT)).clicked() {
-                            self.selected_playlist_songs = playlist.songs().ok();
-                            if self.selected_playlist_songs.is_none() {
+                    let start = row_range.start;
+                    ui.style_mut().spacing.item_spacing.y = BUTTON_SPACING;
+                    for (i, playlist) in self.config.playlists[row_range].iter_mut().enumerate() {
+                        let playlist_idx = i + start;
+                        // Option::is_some_and would require a clone :(
+                        let selected = if let Some((selected_playlist_id, _)) =
+                            self.ui_playlist_info.selected
+                        {
+                            playlist_idx == selected_playlist_id
+                        } else {
+                            false
+                        };
+                        if ui
+                            .add(PlaylistButton::new(&playlist, ROW_HEIGHT, selected))
+                            .clicked()
+                        {
+                            if !playlist.check_exists() {
+                                eprintln!("CONTINUE");
+                                continue;
+                            }
+                            self.ui_playlist_info.selected =
+                                playlist.songs().ok().map(|songs| (playlist_idx, songs));
+                            if self.ui_playlist_info.selected.is_none() {
                                 egui::containers::popup::show_tooltip_at(
                                     ui.ctx(),
                                     ui.layer_id(),
@@ -303,13 +380,15 @@ impl eframe::App for AmuseingApp {
         });
         let central_panel = egui::CentralPanel::default();
         central_panel.show(ctx, |ui| {
-            if let Some(songs) = self.selected_playlist_songs.clone() {
-                if songs.is_empty() {
+            if let Some((selected_playlist_id, selected_songs)) =
+                self.ui_playlist_info.selected.clone()
+            {
+                if selected_songs.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label("This playlist doesn't have any songs")
                     });
                 } else {
-                    let total_rows = songs.len();
+                    let total_rows = selected_songs.len();
                     // const SONGS_SHOWN: f32 = 10.;
                     // let row_height = ui.available_height() / SONGS_SHOWN;
                     const ROW_HEIGHT: f32 = 60.;
@@ -318,14 +397,38 @@ impl eframe::App for AmuseingApp {
                         ROW_HEIGHT,
                         total_rows,
                         |ui, row_range| {
-                            for (song_idx, song) in songs[row_range].iter().enumerate() {
-                                let button_resp = ui.add(SongButton::new(&song, ROW_HEIGHT));
+                            let start = row_range.start;
+                            ui.style_mut().spacing.item_spacing.y = BUTTON_SPACING;
+                            for (i, song) in selected_songs[row_range].iter().enumerate() {
+                                let song_idx = i + start;
+                                // let song_selected = self.active_playlist_id.is_some_and(|active_playlist_id| {
+                                //     selected_playlist_id == active_playlist_id && song_idx == *song.id()
+                                // });
+                                let song_selected = self.ui_playlist_info.active.is_some_and(
+                                    |(active_playlist_id, active_song_id)| {
+                                        selected_playlist_id == active_playlist_id
+                                            && song_idx == active_song_id
+                                    },
+                                );
+                                // dbg!(song_idx, song.id());
+                                let button_resp =
+                                    ui.add(SongButton::new(&song, ROW_HEIGHT, song_selected));
                                 if button_resp.clicked() {
-                                    self.try_start_new_player(ui, songs.clone(), song_idx);
+                                    self.try_start_new_player(
+                                        ui,
+                                        selected_songs.clone(),
+                                        selected_playlist_id,
+                                        song_idx,
+                                    );
                                 }
                                 button_resp.context_menu(|ui| {
                                     if ui.button("Play this song").clicked() {
-                                        self.try_start_new_player(ui, songs.clone(), song_idx);
+                                        self.try_start_new_player(
+                                            ui,
+                                            selected_songs.clone(),
+                                            selected_playlist_id,
+                                            song_idx,
+                                        );
                                     }
                                 });
                             }

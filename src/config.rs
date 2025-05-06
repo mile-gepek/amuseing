@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 #[repr(transparent)]
 pub struct Playlists {
-    playlists: Vec<Playlist>
+    playlists: Vec<Playlist>,
 }
 
 impl Deref for Playlists {
@@ -46,11 +46,9 @@ impl Default for Playlists {
         };
         let playlists = match Playlist::new(path, "Music".into(), None) {
             Ok(playlist) => vec![playlist],
-            Err(_) => Vec::new()
+            Err(_) => Vec::new(),
         };
-        Self {
-            playlists
-        }
+        Self { playlists }
     }
 }
 
@@ -118,7 +116,7 @@ impl Default for Config {
             fs::create_dir(&path).unwrap();
         }
         path.push("config.toml");
-        let inner = if path.exists() {
+        let mut inner = if path.exists() {
             let toml_str = fs::read_to_string(&path).unwrap();
             toml::from_str(&toml_str).unwrap()
         } else {
@@ -126,6 +124,9 @@ impl Default for Config {
             fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
             config
         };
+        for playlist in inner.playlists.iter_mut() {
+            playlist.check_exists();
+        }
         Self { path, inner }
     }
 }

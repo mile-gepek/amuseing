@@ -8,6 +8,7 @@ cpal = "0.15.3"
 eframe = { version = "0.31.1", features = ["wgpu"] }
 egui = "0.31.1"
 egui_extras = { version = "0.31.1", features = ["all_loaders"] }
+egui_flex = "0.3.0"
 ringbuf = "0.4.7"
 rubato = "0.16.1"
 serde = { version = "1.0.219", features = ["derive"] }
