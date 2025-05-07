@@ -157,7 +157,8 @@ impl<'a> CenterControls<'a> {
 impl Widget for &mut CenterControls<'_> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         ui.horizontal(|ui| {
-            let rewind_button = Button::image(include_image!("../assets/button_icons/rewind.svg"));
+            let rewind_button = Button::image(include_image!("../assets/button_icons/rewind.svg"))
+                .corner_radius(BUTTON_CORNER_RADIUS);
             let size = (50., 50.);
             const NUM_BUTTONS: f32 = 3.;
             let spacing = &mut ui.spacing_mut().item_spacing.x;
@@ -172,7 +173,7 @@ impl Widget for &mut CenterControls<'_> {
             } else {
                 include_image!("../assets/button_icons/pause.svg")
             };
-            let pause_button = Button::image(img);
+            let pause_button = Button::image(img).corner_radius(BUTTON_CORNER_RADIUS);
             if ui.add_sized(size, pause_button).clicked() {
                 if self.player.is_paused() {
                     self.player.resume();
@@ -181,7 +182,8 @@ impl Widget for &mut CenterControls<'_> {
                 }
             }
             let ff_button =
-                Button::image(include_image!("../assets/button_icons/fast-forward.svg"));
+                Button::image(include_image!("../assets/button_icons/fast-forward.svg"))
+                    .corner_radius(BUTTON_CORNER_RADIUS);
             if ui.add_sized(size, ff_button).clicked() {
                 self.player.fast_forward();
             }
@@ -309,6 +311,19 @@ impl eframe::App for AmuseingApp {
             y: window_height,
         } = ctx.screen_rect().size();
         let player = &mut self.player;
+        if let Some(player_update) = &self.player_update {
+            for message in player_update.try_iter() {
+                match message {
+                    PlayerUpdate::SongChange { song: _, index } => {
+                        if let Some((_, active_song_id)) = self.ui_playlist_info.active.as_mut() {
+                            // Yes I know this sets the active song ID twice when a song is clicked, whatcha gonna do about it
+                            *active_song_id = index;
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
         let controls_panel =
             egui::TopBottomPanel::bottom("Player controls panel").exact_height(100.);
         controls_panel.show(ctx, |ui| {

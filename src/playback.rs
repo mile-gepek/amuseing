@@ -434,14 +434,14 @@ impl Player {
             'main_loop: loop {
                 let song = {
                     let mut queue_lock = queue.lock().unwrap();
+                    let next_song = queue_lock.next_item().cloned();
                     let index = queue_lock.index();
-                    let next_song = queue_lock.next_item();
                     let _ =
-                        player_update_tx.send(PlayerUpdate::song_change(index, next_song.cloned()));
+                        player_update_tx.send(PlayerUpdate::song_change(index, next_song.clone()));
                     let Some(song) = next_song else {
                         break;
                     };
-                    song.clone()
+                    song
                 };
                 let (mut reader, mut decoder) = song.reader_decoder().unwrap();
                 let track = reader.default_track().unwrap();
