@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5.37", features = ["derive"] }
 cpal = "0.15.3"
 eframe = { version = "0.31.1", features = ["wgpu"] }
 egui = "0.31.1"
 egui_extras = { version = "0.31.1", features = ["all_loaders"] }
 egui_flex = "0.3.0"
+env_logger = "0.11.8"
+log = "0.4.27"
 ringbuf = "0.4.7"
 rubato = "0.16.1"
 serde = { version = "1.0.219", features = ["derive"] }

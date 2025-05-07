@@ -2,6 +2,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Sample, SampleFormat, SizedSample,
 };
+use log::{debug, error, info, warn};
 use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
     HeapRb,
@@ -36,7 +37,7 @@ type SampleType = f64;
 /// The buffer stores `[f64; 2]` so the number of samples is double.
 const CHUNK_SIZE: usize = 512;
 
-use crate::errors::{OutOfBoundsError, PlayerStartError, SeekError};
+use crate::errors::{OutOfBoundsError, PlayerStartError, SeekError, StreamSetupError};
 use crate::queue::{Queue, RepeatMode};
 
 /// Represents a song from a [`Player`]s queue.
@@ -72,6 +73,10 @@ impl Song {
 
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
     }
 
     pub fn duration(&self) -> &Duration {
@@ -128,7 +133,6 @@ pub struct Playlist {
 impl Playlist {
     pub fn new(path: PathBuf, name: String, icon_path: Option<PathBuf>) -> io::Result<Self> {
         let path = path.canonicalize()?;
-        dbg!(&path.exists());
         Ok(Self {
             exists: path.exists(),
             path,
@@ -140,6 +144,13 @@ impl Playlist {
     /// Check and update the internal bool if the path exists on the system, returns that same result
     pub fn check_exists(&mut self) -> bool {
         self.exists = self.path.exists();
+        if !self.exists {
+            warn!(
+                "Playlist '{}' has invalid path: '{}'",
+                self.name,
+                self.path.display()
+            );
+        }
         self.exists
     }
 
@@ -162,7 +173,15 @@ impl Playlist {
     pub fn songs(&self) -> std::io::Result<Vec<Song>> {
         Ok(self
             .path
-            .read_dir()?
+            .read_dir()
+            .inspect_err(|e| {
+                error!(
+                    "Error while getting songs from playlist '{}' at path '{}': {}",
+                    self.name,
+                    self.path.display(),
+                    e
+                )
+            })?
             .filter_map(|f| {
                 let path = f.ok()?.path();
                 if path.extension()? == "mp3" {
@@ -231,7 +250,7 @@ impl AtomicVolume {
     /// If the percentage is 0. the attenuation is -infinity.
     /// Why? Because I think this is how loudness works please help.
     pub fn from_percent(percent: f64) -> Self {
-        assert!((0. ..=1.).contains(&percent));
+        let percent = percent.clamp(0., 1.);
         let multiplier = if percent == 0. || percent == 1. {
             percent
         } else {
@@ -406,13 +425,20 @@ impl Player {
             let mut state_lock = self.state.lock().unwrap();
             match *state_lock {
                 PlayerState::Playing | PlayerState::Paused => {
-                    return Err(PlayerStartError::Running)
+                    error!("Player already running");
+                    return Err(PlayerStartError::Running);
                 }
                 _ => {}
             }
             *state_lock = PlayerState::Paused;
         }
         let queue = self.queue.clone();
+        {
+            let queue_lock = queue.lock().unwrap();
+            if queue_lock.is_empty() {
+                return Err(PlayerStartError::EmptyQueue);
+            }
+        }
         let player_state = self.state.clone();
         let time_playing = self.time_playing.clone();
         let volume = self.volume.clone();
@@ -424,12 +450,15 @@ impl Player {
 
         // DECODER THREAD
         thread::spawn(move || {
-            // Assume we start at 44.1k so the resampler doesn't break;
+            info!("Starting decoder thread");
+            // Assume we start at 44.1k;
             let mut last_song_sample_rate = 44100;
             let (mut sample_rate_update_input, mut sample_rate_update_output) =
                 triple_buffer(&last_song_sample_rate);
-            let (mut stream, mut stream_rx, mut producer) =
-                stream_setup(sample_rate_update_output, buffer_size, volume.clone());
+            let (mut stream, mut stream_error_rx, mut producer) =
+                stream_setup(sample_rate_update_output, buffer_size, volume.clone())
+                    .inspect_err(|e| error!("Error setting up stream: {}", e))
+                    .unwrap();
             stream.play().unwrap();
             'main_loop: loop {
                 let song = {
@@ -441,6 +470,11 @@ impl Player {
                     let Some(song) = next_song else {
                         break;
                     };
+                    debug!(
+                        "Starting song '{}', path '{}'",
+                        song.title(),
+                        song.path().display()
+                    );
                     song
                 };
                 let (mut reader, mut decoder) = song.reader_decoder().unwrap();
@@ -463,23 +497,25 @@ impl Player {
 
                 let mut playing = true;
                 'song_loop: loop {
-                    match stream_rx.try_recv() {
+                    match stream_error_rx.try_recv() {
                         // Currently we recreate the device and audio stream for any error, but I'm not sure if that's stupid
-                        Ok(e) => {
+                        Ok(_e) => {
                             {
                                 let mut state = player_state.lock().unwrap();
                                 *state = PlayerState::Paused;
                             }
                             (sample_rate_update_input, sample_rate_update_output) =
                                 triple_buffer(&last_song_sample_rate);
-                            (stream, stream_rx, producer) = stream_setup(
+                            (stream, stream_error_rx, producer) = stream_setup(
                                 sample_rate_update_output,
                                 buffer_size,
                                 volume.clone(),
-                            );
+                            )
+                            .inspect_err(|e| error!("Error setting up stream: {}", e))
+                            .unwrap();
                             let _ = player_update_tx.send(PlayerUpdate::DeviceDisconnect);
-                            println!("Got stream error: {e}");
                         }
+                        // This means the stream died, should probably send that through the player update channel
                         Err(mpsc::TryRecvError::Disconnected) => break 'main_loop,
                         _ => (),
                     }
@@ -588,6 +624,7 @@ impl Player {
                     std::thread::sleep(Duration::from_millis(5))
                 }
             }
+            info!("Exiting decoder thread");
         });
         {
             let mut state_lock = self.state.lock().unwrap();
@@ -638,16 +675,10 @@ impl Drop for Player {
     }
 }
 
-fn init_cpal() -> (cpal::Device, cpal::SupportedStreamConfig) {
-    let device = cpal::default_host()
-        .default_output_device()
-        .expect("no output device available");
-
-    let stream_config = device
-        .default_output_config()
-        .expect("A device should have a default config");
-
-    (device, stream_config)
+fn init_cpal() -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
+    let device = cpal::default_host().default_output_device();
+    let stream_config = device.clone()?.default_output_config().ok();
+    device.zip(stream_config)
 }
 
 fn write_audio<T>(
@@ -750,7 +781,7 @@ where
         write_audio(data, &mut sample_deque, channel_factor, &volume, cbinfo);
     };
     let err_fn = move |e| {
-        eprintln!("{e}");
+        error!("Stream error '{}'", e);
         let _ = stream_tx.send(e);
     };
     device.build_output_stream(stream_config, callback, err_fn, None)
@@ -772,16 +803,19 @@ macro_rules! impl_create_stream {
     ) => {
             {
             match $config.sample_format() {
-                $(SampleFormat::$p => create_stream::<$t>(
-                    $device,
-                    &($config).into(),
-                    $sample_rate_update,
-                    $stream_tx,
-                    $consumer,
-                    $volume,
-                )),+,
-                format => panic!("Unsupported format {format:?}"),
-            }.unwrap()
+                $(SampleFormat::$p => {
+                    let res = create_stream::<$t>(
+                        $device,
+                        &($config).into(),
+                        $sample_rate_update,
+                        $stream_tx,
+                        $consumer,
+                        $volume,
+                    );
+                    res.map_err(|e| e.into())
+                })+,
+                format => Err(StreamSetupError::UnsupportedSampleFormat(format)),
+            }
         }
     }
 }
@@ -790,12 +824,22 @@ fn stream_setup(
     sample_rate_update: Output<u32>,
     buffer_size: usize,
     volume: Arc<AtomicVolume>,
-) -> (
-    cpal::Stream,
-    mpsc::Receiver<cpal::StreamError>,
-    impl Producer<Item = [SampleType; 2]>,
-) {
-    let (device, stream_config) = init_cpal();
+) -> Result<
+    (
+        cpal::Stream,
+        mpsc::Receiver<cpal::StreamError>,
+        impl Producer<Item = [SampleType; 2]>,
+    ),
+    StreamSetupError,
+> {
+    let (device, stream_config) = init_cpal().ok_or(StreamSetupError::NoDeviceFound)?;
+    debug!("Trying to create stream");
+    if let Ok(name) = device.name() {
+        debug!("Found device '{}'", name);
+    } else {
+        warn!("Found device without name");
+    }
+    debug!("Device sample rate: {}", stream_config.sample_rate().0);
     let (producer, consumer) = {
         let buf: HeapRb<[f64; 2]> = HeapRb::new(buffer_size);
         buf.split()
@@ -820,6 +864,6 @@ fn stream_setup(
             F32 => f32,
             F64 => f64,
         ]
-    );
-    (stream, stream_rx, producer)
+    )?;
+    Ok((stream, stream_rx, producer))
 }

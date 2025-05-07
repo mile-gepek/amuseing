@@ -9,6 +9,8 @@ use thiserror::Error;
 pub enum PlayerStartError {
     #[error("The player is already running")]
     Running,
+    #[error("The player was started while the queue was empty")]
+    EmptyQueue,
 }
 
 /// Returned when [`Player::seek_duration`] fails.
@@ -51,4 +53,15 @@ impl<T: PartialOrd + Debug> OutOfBoundsError<T> {
     pub fn range(value: T, min: T, max: T) -> Self {
         Self::Range { value, min, max }
     }
+}
+
+
+#[derive(Debug, Error)]
+pub enum StreamSetupError {
+    #[error("Unsupported sample format {0}")]
+    UnsupportedSampleFormat(cpal::SampleFormat),
+    #[error("Failed to build stream: {0}")]
+    BuildStreamError(#[from] cpal::BuildStreamError),
+    #[error("Found no default audio device")]
+    NoDeviceFound,
 }

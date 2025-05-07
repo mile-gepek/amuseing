@@ -1,3 +1,6 @@
+use clap::Parser;
+use log::{debug, error, info, warn};
+
 use std::{sync::mpsc::Receiver, time::Duration};
 
 use amuseing::{
@@ -293,10 +296,16 @@ impl AmuseingApp {
         song_idx: usize,
     ) {
         if songs.is_empty() {
-            // FIXME: this is kinda dumb
+            // FIXME: this shouldn't ever be possible
             return;
         }
-        if self.start_new_player(songs.clone(), song_idx).is_err() {
+        if let Err(e) = self.start_new_player(songs.clone(), song_idx) {
+            let playlist = &self.config.playlists[playlist_idx];
+            warn!(
+                "Failed to start playlist '{}', error: {}",
+                playlist.name(),
+                e
+            );
             //TODO: show popup with a display message saying yada yada
         } else {
             self.ui_playlist_info.active = Some((playlist_idx, song_idx));
@@ -319,7 +328,7 @@ impl eframe::App for AmuseingApp {
                             // Yes I know this sets the active song ID twice when a song is clicked, whatcha gonna do about it
                             *active_song_id = index;
                         }
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -372,7 +381,11 @@ impl eframe::App for AmuseingApp {
                             .clicked()
                         {
                             if !playlist.check_exists() {
-                                eprintln!("CONTINUE");
+                                warn!(
+                                    "Tried to select playlist '{}' with invalid path '{}'",
+                                    playlist.name(),
+                                    playlist.path().display()
+                                );
                                 continue;
                             }
                             self.ui_playlist_info.selected =
@@ -380,9 +393,12 @@ impl eframe::App for AmuseingApp {
                             if self.ui_playlist_info.selected.is_none() {
                                 egui::containers::popup::show_tooltip_at(
                                     ui.ctx(),
-                                    ui.layer_id(),
-                                    ui.id(),
-                                    (0., 0.).into(),
+                                    egui::LayerId::new(
+                                        egui::Order::Foreground,
+                                        egui::Id::new("popup"),
+                                    ),
+                                    egui::Id::new("popup"),
+                                    (window_width / 2., window_height / 2.).into(),
                                     |ui| {
                                         ui.label("kurcina");
                                     },
@@ -456,7 +472,50 @@ impl eframe::App for AmuseingApp {
         });
     }
 }
+
+#[derive(clap::ValueEnum, Clone, Copy, Default, Debug)]
+enum LogLevel {
+    // Show all debug information
+    Debug,
+    // Show info, warnings, and errors
+    Info,
+    // Show warnings and errors
+    Warn,
+    // Show only errors
+    #[default]
+    Error,
+}
+
+impl LogLevel {
+    fn to_level_filter(&self) -> log::LevelFilter {
+        match self {
+            LogLevel::Debug => log::LevelFilter::Debug,
+            LogLevel::Info => log::LevelFilter::Info,
+            LogLevel::Warn => log::LevelFilter::Warn,
+            LogLevel::Error => log::LevelFilter::Error,
+        }
+    }
+}
+
+#[derive(clap::Parser, Debug)]
+struct Args {
+    #[arg(long)]
+    log: Option<LogLevel>,
+    #[arg(long)]
+    liblog: Option<LogLevel>,
+}
+
 fn main() {
+    let args = Args::parse();
+    let lib_log_level = args.liblog.unwrap_or_default().to_level_filter();
+    let log_level = args.log.unwrap_or_default().to_level_filter();
+    env_logger::Builder::new()
+        .filter_level(lib_log_level)
+        .filter_module("amuseing", log_level)
+        .init();
+
+    info!("Starting app");
+
     let mut native_options = eframe::NativeOptions::default();
     native_options.viewport = egui::ViewportBuilder::default()
         .with_min_inner_size((600., 400.))
@@ -469,4 +528,6 @@ fn main() {
         Box::new(|cc| Ok(Box::new(AmuseingApp::new(cc)))),
     )
     .unwrap();
+
+    info!("Exiting");
 }

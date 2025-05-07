@@ -7,6 +7,8 @@ use std::{
 use crate::playback::Playlist;
 use serde::{Deserialize, Serialize};
 
+use log::{info, warn, error, debug};
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(transparent)]
 #[repr(transparent)]
@@ -102,6 +104,7 @@ impl Config {
     }
 }
 
+// FIXME: this should instead be a method to return an error when the file couldn't be parsed
 impl Default for Config {
     fn default() -> Self {
         #[cfg(target_os = "linux")]
@@ -118,7 +121,7 @@ impl Default for Config {
         path.push("config.toml");
         let mut inner = if path.exists() {
             let toml_str = fs::read_to_string(&path).unwrap();
-            toml::from_str(&toml_str).unwrap()
+            toml::from_str(&toml_str).inspect_err(|e| error!("Error parsing config file: {e}")).unwrap()
         } else {
             let config = ConfigInner::default();
             fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
