@@ -576,12 +576,18 @@ impl Player {
                         if playing {
                             if *state == PlayerState::Paused {
                                 playing = false;
-                                stream.pause().unwrap();
+                                stream
+                                    .pause()
+                                    .inspect_err(|e| error!("Error when pausing stream: {}", e))
+                                    .unwrap();
                             }
                         } else {
                             if *state == PlayerState::Playing {
                                 playing = true;
-                                stream.play().unwrap();
+                                stream
+                                    .play()
+                                    .inspect_err(|e| error!("Error when playing stream: {}", e))
+                                    .unwrap();
                             }
                             std::thread::sleep(Duration::from_millis(10));
                         }

@@ -18,7 +18,7 @@ pub enum PlayerStartError {
 /// This can be because the duration given was out of bounds, or because the method was called when there was no song playing
 #[derive(Debug, Error)]
 pub enum SeekError {
-    #[error("0")]
+    #[error("Out of bounds error when seeking: {0}")]
     OutOfRange(OutOfBoundsError<Duration>),
     // Returned when the Player tries to seek but there is no song playing;
     #[error("The player does not have a song which can be skipped")]

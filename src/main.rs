@@ -1,3 +1,8 @@
+#![cfg_attr(
+    not(debug_assertions),
+    windows_subsystem = "windows"
+)]
+
 use clap::Parser;
 use log::{debug, error, info, warn};
 
@@ -473,7 +478,7 @@ impl eframe::App for AmuseingApp {
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Default, Debug)]
+#[derive(clap::ValueEnum, Clone, Copy, Default, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum LogLevel {
     // Show all debug information
     Debug,
@@ -507,11 +512,12 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let lib_log_level = args.liblog.unwrap_or_default().to_level_filter();
-    let log_level = args.log.unwrap_or_default().to_level_filter();
+    let lib_log_level = args.liblog.unwrap_or_default();
+    let log_level = args.log.unwrap_or_default();    
+
     env_logger::Builder::new()
-        .filter_level(lib_log_level)
-        .filter_module("amuseing", log_level)
+        .filter_level(lib_log_level.to_level_filter())
+        .filter_module("amuseing", log_level.to_level_filter())
         .init();
 
     info!("Starting app");
