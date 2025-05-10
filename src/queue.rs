@@ -35,9 +35,9 @@ impl Display for RepeatMode {
 ///
 /// Queues like this are commonly found in music players, such as spotify or youtube music.
 ///
-/// See [`next`] for an explanation on how the repeat mode changes iteration.
+/// See [`next_item`] for an explanation on how the repeat mode changes iteration.
 ///
-/// [`next`]: Self::next
+/// [`next_item`]: Self::next_item
 #[derive(Clone, Debug)]
 pub struct Queue<T> {
     items: Vec<T>,
@@ -61,12 +61,11 @@ impl<T> Queue<T> {
         }
     }
 
-    /// Return the next item in the queue, depending on the [RepeatMode].
+    /// Return the next item in the queue, depending on the [`RepeatMode`].
     ///
     /// If the queue is not empty, the first call is gives the first item, regardless of the repeat mode.
-    /// Calling [`next`] after [`jump`], [`skip`] or [`rewind`] also guarantees the next item, regardless of the repeat mode.
+    /// Calling `next` after [`jump`], [`skip`] or [`rewind`] also guarantees the next item, regardless of the repeat mode.
     ///
-    /// [`next`]: Self::next
     /// [`jump`]: Self::jump
     /// [`skip`]: Self::skip
     /// [`rewind`]: Self::rewind
@@ -99,6 +98,10 @@ impl<T> Queue<T> {
         self.items.get(self.index)
     }
 
+    pub fn items(&self) -> &[T] {
+        &self.items
+    }
+
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -109,6 +112,12 @@ impl<T> Queue<T> {
 
     pub fn push(&mut self, item: T) {
         self.items.push(item);
+    }
+
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.index = 0;
+        self.has_advanced = false;
     }
 
     /// Remove the value at position `index`, calling [`Vec::remove`] internally.

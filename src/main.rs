@@ -1,7 +1,4 @@
-#![cfg_attr(
-    not(debug_assertions),
-    windows_subsystem = "windows"
-)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use clap::Parser;
 use log::{debug, error, info, warn};
@@ -10,7 +7,6 @@ use std::{sync::mpsc::Receiver, time::Duration};
 
 use amuseing::{
     config::Config,
-    errors::PlayerStartError,
     playback::{Player, PlayerUpdate, Playlist, Song},
     queue::Queue,
 };
@@ -202,7 +198,9 @@ impl Widget for &mut CenterControls<'_> {
 
 #[derive(Clone, Debug)]
 struct UiPlaylistInfo {
+    /// The index of the selected playlist in Config.playlists, and the `Song`s from that object
     selected: Option<(usize, Vec<Song>)>,
+    /// The index of the playlist that's currently playing, and the index of the Song inside playlist
     active: Option<(usize, usize)>,
 }
 
@@ -248,7 +246,7 @@ impl AmuseingApp {
                 .unwrap()
                 .size = 16.;
         });
-        let config = Config::default();
+        let config = Config::from_default_path().unwrap_or_default();
         let playlist = &config.playlists[0];
         let songs = playlist.songs().unwrap();
         let ui_playlist_info = UiPlaylistInfo {
@@ -270,30 +268,7 @@ impl AmuseingApp {
         }
     }
 
-    pub fn start_new_player(
-        &mut self,
-        songs: Vec<Song>,
-        song_idx: usize,
-    ) -> Result<(), PlayerStartError> {
-        let new_player = Player::new(self.config.player.volume);
-        let curr_repeat_mode = self.player.queue_mut().repeat_mode;
-        {
-            let mut queue = new_player.queue_mut();
-            *queue = Queue::new(curr_repeat_mode);
-            queue.extend(songs);
-            queue
-                .jump(song_idx)
-                .expect("Should be able to jump to a song which is displayed in the ui");
-        }
-        self.player = new_player;
-        let player_update = self.player.run(self.config.player.buffer_size);
-        player_update.map(|update| {
-            self.player_update = Some(update);
-            ()
-        })
-    }
-
-    fn try_start_new_player(
+    fn change_playlist(
         &mut self,
         ui: &mut Ui,
         songs: Vec<Song>,
@@ -304,17 +279,20 @@ impl AmuseingApp {
             // FIXME: this shouldn't ever be possible
             return;
         }
-        if let Err(e) = self.start_new_player(songs.clone(), song_idx) {
-            let playlist = &self.config.playlists[playlist_idx];
-            warn!(
-                "Failed to start playlist '{}', error: {}",
-                playlist.name(),
-                e
-            );
-            //TODO: show popup with a display message saying yada yada
+        self.player.set_songs(songs);
+        if !self.player.is_active() {
+            // TODO: handle this error
+            // Show popup if the playlist couldn't be played
+            self.player_update = self
+                .player
+                .run(self.config.player.buffer_size)
+                .inspect_err(|e| error!("Error starting player: {}", e))
+                .ok();
         } else {
-            self.ui_playlist_info.active = Some((playlist_idx, song_idx));
-        };
+            self.player.stop();
+            self.player.resume();
+        }
+        self.ui_playlist_info.active = Some((playlist_idx, song_idx));
     }
 }
 
@@ -450,7 +428,7 @@ impl eframe::App for AmuseingApp {
                                 let button_resp =
                                     ui.add(SongButton::new(&song, ROW_HEIGHT, song_selected));
                                 if button_resp.clicked() {
-                                    self.try_start_new_player(
+                                    self.change_playlist(
                                         ui,
                                         selected_songs.clone(),
                                         selected_playlist_id,
@@ -459,7 +437,7 @@ impl eframe::App for AmuseingApp {
                                 }
                                 button_resp.context_menu(|ui| {
                                     if ui.button("Play this song").clicked() {
-                                        self.try_start_new_player(
+                                        self.change_playlist(
                                             ui,
                                             selected_songs.clone(),
                                             selected_playlist_id,
@@ -504,8 +482,10 @@ impl LogLevel {
 
 #[derive(clap::Parser, Debug)]
 struct Args {
+    /// What level of logging to display for the Amuseing app.
     #[arg(long)]
     log: Option<LogLevel>,
+    /// What level of logging to display for the app's dependancies. This is generally intended for developers
     #[arg(long)]
     liblog: Option<LogLevel>,
 }
@@ -513,7 +493,7 @@ struct Args {
 fn main() {
     let args = Args::parse();
     let lib_log_level = args.liblog.unwrap_or_default();
-    let log_level = args.log.unwrap_or_default();    
+    let log_level = args.log.unwrap_or_default();
 
     env_logger::Builder::new()
         .filter_level(lib_log_level.to_level_filter())

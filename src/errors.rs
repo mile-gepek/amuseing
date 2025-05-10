@@ -16,6 +16,8 @@ pub enum PlayerStartError {
 /// Returned when [`Player::seek_duration`] fails.
 ///
 /// This can be because the duration given was out of bounds, or because the method was called when there was no song playing
+/// 
+/// [`Player::seek_duration`]: crate::playback::Player::seek_duration
 #[derive(Debug, Error)]
 pub enum SeekError {
     #[error("Out of bounds error when seeking: {0}")]
@@ -55,7 +57,6 @@ impl<T: PartialOrd + Debug> OutOfBoundsError<T> {
     }
 }
 
-
 #[derive(Debug, Error)]
 pub enum StreamSetupError {
     #[error("Unsupported sample format {0}")]
@@ -64,4 +65,14 @@ pub enum StreamSetupError {
     BuildStreamError(#[from] cpal::BuildStreamError),
     #[error("Found no default audio device")]
     NoDeviceFound,
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("Io Error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Could not deserialize config, error: {0}")]
+    DeserializeError(#[from] toml::de::Error),
+    #[error("Could not serialize config, error: {0}")]
+    SerializeError(#[from] toml::ser::Error),
 }

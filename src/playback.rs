@@ -141,7 +141,7 @@ impl Playlist {
         })
     }
 
-    /// Check and update the internal bool if the path exists on the system, returns that same result
+    /// Check and update the internal `exists` flag if the path exists/doesn't exist on the system, returns that same result
     pub fn check_exists(&mut self) -> bool {
         self.exists = self.path.exists();
         if !self.exists {
@@ -154,6 +154,7 @@ impl Playlist {
         self.exists
     }
 
+    /// Return the internal flag
     pub fn exists(&self) -> bool {
         self.exists
     }
@@ -170,6 +171,8 @@ impl Playlist {
         self.icon_path.as_ref().map(|v| &**v)
     }
 
+    /// Try to gather a vector of `Song` structs from the playlist's path.
+    /// Files are skipped if the entry can't be read, have non-UTF-8 filenames, or the Song struct couldn't be created with `Song::from_path`.
     pub fn songs(&self) -> std::io::Result<Vec<Song>> {
         Ok(self
             .path
@@ -185,7 +188,7 @@ impl Playlist {
             .filter_map(|f| {
                 let path = f.ok()?.path();
                 if path.extension()? == "mp3" {
-                    let title = path.file_name().unwrap().to_str().unwrap();
+                    let title = path.file_name()?.to_str()?;
                     return Song::from_path(title.into(), path).ok();
                 }
                 None
@@ -204,8 +207,8 @@ pub enum PlayerState {
 
 pub enum PlayerMessage {
     Stop,
-    // Pause,
-    // Resume,
+    Pause,
+    Resume,
     Seek(Duration),
     Quit,
 }
@@ -245,6 +248,8 @@ impl AtomicVolume {
     }
 
     /// Calculates the sample multiplier depending on a percentage to adjust for human hearing being logarithmic.
+    ///
+    /// The percentage gets clamped to the range 0f64..1f64.
     ///
     /// The curve is: `10^(Ar/20)`, where `Ar` is the relative attenuation interpolated between -60 and 0 decibels, based on the percentage.
     /// If the percentage is 0. the attenuation is -infinity.
@@ -287,7 +292,7 @@ impl AtomicMilliseconds {
 }
 
 pub enum PlayerUpdate {
-    SongChange { song: Option<Song>, index: usize },
+    SongChange { index: usize, song: Option<Song> },
     DeviceDisconnect,
     // DeviceChange(),
     // StateChange,
@@ -303,9 +308,10 @@ pub struct Player {
     state: Arc<Mutex<PlayerState>>,
     /// None if the player hasn't started yes, the player's state is `PlayerState::NotStarted` in this case
     sender: Option<mpsc::Sender<PlayerMessage>>,
-
     time_playing: Arc<AtomicMilliseconds>,
     volume: Arc<AtomicVolume>,
+    /// If a song has been playing longer than this duration, only rewind to the beginning of it
+    rewind_threshold: Duration,
 }
 
 // TODO: turn into builder pattern
@@ -318,10 +324,16 @@ impl Player {
             sender: None,
             time_playing: AtomicMilliseconds::default().into(),
             volume: AtomicVolume::from_percent(volume).into(),
+            rewind_threshold: Duration::from_secs(3),
         }
     }
 
-    pub fn queue_mut(&self) -> MutexGuard<Queue<Song>> {
+    /// Return a MutexGuard for the Player's `Queue`.
+    ///
+    /// Avoid any other methods that lock the queue until this Guard is dropped or it will result in a deadlock
+    /// 
+    /// [`Queue`]: Queue
+    pub fn queue_mut(&mut self) -> MutexGuard<Queue<Song>> {
         self.queue.lock().unwrap()
     }
 
@@ -346,7 +358,7 @@ impl Player {
 
     /// Return a bool if the player is currently paused.
     ///
-    /// The player might not be paused immediately after [`pause`].
+    /// The player might not be paused immediately after [`pause`], this is down to the thread scheduler.
     ///
     /// [`pause`]: Self::pause
     pub fn is_paused(&self) -> bool {
@@ -356,7 +368,12 @@ impl Player {
 
     /// Return the state of the audio decoding thread.
     ///
-    /// NOTE: the metods `pause`, `resume`, `quit`, and `stop` don't update the state automatically so using this method may result in a race condition.
+    /// NOTE: the metods [`pause`], [`resume`], [`quit`], and [`stop`] don't update the state automatically so using this method may result in a race condition.
+    /// 
+    /// [`pause`]: Self::pause
+    /// [`resume`]: Self::resume
+    /// [`quit`]: Self::quit
+    /// [`stop`]: Self::stop
     pub fn state(&self) -> PlayerState {
         *self.state.lock().unwrap()
     }
@@ -371,22 +388,22 @@ impl Player {
 
     /// Send a message to the audio thread to quit playing entirely.
     ///
-    /// NOTE: the player's state is NOT updated to Finished by this call, but by the audio thread.
-    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    /// NOTE: the player's state is NOT updated to Finished by this call, but by the audio decoding thread.
+    /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
-    /// [`Player::state`]: Self::state
+    /// [`state`]: Self::state
     pub fn quit(&mut self) -> bool {
         self.send_message(PlayerMessage::Quit)
     }
 
     /// Send a message to the audio thread to stop the current song.
     ///
-    /// If there are more songs available, they will be played.
+    /// If there are more songs waiting in the queue, they will be played after.
     ///
-    /// NOTE: the player's state is NOT updated to Finished (if there are no new songs) by this call, but by the audio thread.
-    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    /// NOTE: the player's state is NOT updated to Finished (if there are no songs left) by this call, but by the audio thread.
+    /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
-    /// [`Player::state`]: Self::state
+    /// [`state`]: Self::state
     pub fn stop(&mut self) -> bool {
         self.send_message(PlayerMessage::Stop)
     }
@@ -394,27 +411,39 @@ impl Player {
     /// Send a message to the audio thread to pause playback.
     ///
     /// NOTE: the player's state is NOT updated to Paused by this call, but by the audio thread
-    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
-    /// [`Player::state`]: Self::state
-    pub fn pause(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        *state = PlayerState::Paused;
-
-        // self.send_message(PlayerMessage::Pause)
+    /// [`state`]: Self::state
+    pub fn pause(&mut self) -> bool {
+        self.send_message(PlayerMessage::Pause)
     }
 
     /// Send a message to the audio thread to resume playback.
     ///
     /// NOTE: the player's state is NOT updated to Playing by this call, but by the audio thread
-    /// This means you should not depend on the method [`Player::state`] for data, as it can result in a race condition.
+    /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
-    /// [`Player::state`]: Self::state
-    pub fn resume(&mut self) {
-        let mut state = self.state.lock().unwrap();
-        *state = PlayerState::Playing;
+    /// [`state`]: Self::state
+    pub fn resume(&mut self) -> bool {
+        self.send_message(PlayerMessage::Resume)
+    }
 
-        // self.send_message(PlayerMessage::Resume)
+    /// Clears and sets the items of the `queue`. Most likely you want to also call `stop` after this
+    ///
+    /// [`queue`]: Queue
+    /// [`stop`]: Self::stop
+    pub fn set_songs(&mut self, songs: Vec<Song>) {
+        let mut queue_lock = self.queue.lock().unwrap();
+        queue_lock.clear();
+        queue_lock.extend(songs.into_iter());
+    }
+
+    /// Shortcut for changing the repeat mode of the `queue`.
+    ///
+    /// [`queue`]: crate::queue::Queue
+    pub fn set_repeat_mode(&mut self, repeat_mode: RepeatMode) {
+        let mut queue_lock = self.queue.lock().unwrap();
+        queue_lock.repeat_mode = repeat_mode;
     }
 
     /// Start the player.
@@ -430,15 +459,13 @@ impl Player {
                 }
                 _ => {}
             }
-            *state_lock = PlayerState::Paused;
-        }
-        let queue = self.queue.clone();
-        {
-            let queue_lock = queue.lock().unwrap();
+            let queue_lock = self.queue.lock().unwrap();
             if queue_lock.is_empty() {
                 return Err(PlayerStartError::EmptyQueue);
             }
+            *state_lock = PlayerState::Paused;
         }
+        let queue = self.queue.clone();
         let player_state = self.state.clone();
         let time_playing = self.time_playing.clone();
         let volume = self.volume.clone();
@@ -523,24 +550,30 @@ impl Player {
                         match message {
                             PlayerMessage::Quit => break 'main_loop,
                             PlayerMessage::Stop => break 'song_loop,
-                            // PlayerMessage::Pause => {
-                            //     {
-                            //         let mut state_lock = player_state.lock().unwrap();
-                            //         *state_lock = PlayerState::Paused;
-                            //     }
-                            //     playing = false;
-                            //     stream.pause().unwrap();
-                            //     // We can slow down the thread a bit if the player is paused
-                            //     thread::sleep(Duration::from_millis(100));
-                            // }
-                            // PlayerMessage::Resume => {
-                            //     {
-                            //         let mut state_lock = player_state.lock().unwrap();
-                            //         *state_lock = PlayerState::Playing;
-                            //     }
-                            //     stream.play().unwrap();
-                            //     playing = true;
-                            // }
+                            PlayerMessage::Pause => {
+                                let mut state_lock = player_state.lock().unwrap();
+                                if *state_lock != PlayerState::Paused {
+                                    *state_lock = PlayerState::Paused;
+                                    stream
+                                        .pause()
+                                        .inspect_err(|e| error!("Error when pausing stream: {}", e))
+                                        .unwrap();
+                                    debug!("Pausing player");
+                                    playing = false;
+                                }
+                            }
+                            PlayerMessage::Resume => {
+                                let mut state_lock = player_state.lock().unwrap();
+                                if *state_lock != PlayerState::Playing {
+                                    *state_lock = PlayerState::Playing;
+                                    stream
+                                        .play()
+                                        .inspect_err(|e| error!("Error when playing stream: {}", e))
+                                        .unwrap();
+                                    debug!("Resuming player");
+                                    playing = true;
+                                }
+                            }
                             PlayerMessage::Seek(dur) => {
                                 use symphonia::core::formats::{SeekMode, SeekTo};
                                 let time: units::Time = dur.into();
@@ -571,27 +604,7 @@ impl Player {
                             }
                         }
                     }
-                    {
-                        let state = player_state.lock().unwrap();
-                        if playing {
-                            if *state == PlayerState::Paused {
-                                playing = false;
-                                stream
-                                    .pause()
-                                    .inspect_err(|e| error!("Error when pausing stream: {}", e))
-                                    .unwrap();
-                            }
-                        } else {
-                            if *state == PlayerState::Playing {
-                                playing = true;
-                                stream
-                                    .play()
-                                    .inspect_err(|e| error!("Error when playing stream: {}", e))
-                                    .unwrap();
-                            }
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                    }
+
                     if !playing {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
@@ -630,12 +643,12 @@ impl Player {
                     std::thread::sleep(Duration::from_millis(5))
                 }
             }
+            {
+                let mut state_lock = player_state.lock().unwrap();
+                *state_lock = PlayerState::Finished;
+            }
             info!("Exiting decoder thread");
         });
-        {
-            let mut state_lock = self.state.lock().unwrap();
-            *state_lock = PlayerState::Finished;
-        }
         Ok(player_update_rx)
     }
 
@@ -655,12 +668,11 @@ impl Player {
         self.stop();
     }
 
-    /// Rewind to the beginning of the track if it has been playing long enough, otherwise the previous track.
+    /// Rewind to the beginning of the track if it has been playing long enough (`Player.rewind_threshold`), otherwise the previous track.
     pub fn rewind(&mut self) {
         let time_playing = self.time_playing.as_secs_f64();
-        /// If the current song has been playing for longer than this constant, go back to the beginning of it
-        const REWIND_TOLERANCE: f64 = 3.0;
-        if time_playing > REWIND_TOLERANCE && self.current().is_some() {
+        let rewind_threshold = self.rewind_threshold.as_secs_f64();
+        if time_playing > rewind_threshold && self.current().is_some() {
             self.seek_duration(Duration::from_secs(0))
                 .expect("Rewinding to 0 with a song playing should not fail");
         } else {
@@ -669,7 +681,8 @@ impl Player {
         }
     }
 
-    pub fn is_running(&self) -> bool {
+    /// Is the player active (Paused or Playing).
+    pub fn is_active(&self) -> bool {
         let state = self.state.lock().unwrap();
         matches!(*state, PlayerState::Paused | PlayerState::Playing)
     }
@@ -687,6 +700,7 @@ fn init_cpal() -> Option<(cpal::Device, cpal::SupportedStreamConfig)> {
     device.zip(stream_config)
 }
 
+/// Writes the audio from the shared ring buffer to the cpal data buffer
 fn write_audio<T>(
     data: &mut [T],
     samples: &mut VecDeque<SampleType>,
@@ -709,6 +723,8 @@ fn write_audio<T>(
 }
 
 /// Create a stream to the `device`, reading data from the `consumer`
+///
+/// The stream repeatedly calls a callback which reads data from the `consumer`, resamples it if needed, and then writes it with `write_audio`.
 fn create_stream<T>(
     device: cpal::Device,
     stream_config: &cpal::StreamConfig,

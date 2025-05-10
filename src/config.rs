@@ -1,13 +1,13 @@
 use std::{
     fs,
     ops::{Deref, DerefMut},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
-use crate::playback::Playlist;
+use crate::{errors::ConfigError, playback::Playlist};
 use serde::{Deserialize, Serialize};
 
-use log::{info, warn, error, debug};
+use log::{debug, error, info, warn};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(transparent)]
@@ -31,17 +31,16 @@ impl DerefMut for Playlists {
 
 impl Default for Playlists {
     fn default() -> Self {
-        // Try to get the default "Music" folder if it exists on the OS, windows and gnome create one by default.
-        #[cfg(target_os = "linux")]
-        let path = {
-            let home = std::env::var("HOME").expect("$HOME should exist on linux");
-            let mut path = PathBuf::from(home);
+        // Try to get the user's default "Music" folder if it exists on the OS, windows and gnome create one by default.
+        let path = if cfg!(windows) {
+            let userprofile = std::env::var("USERPROFILE")
+                .expect("Every windows system should have the USERPROFILE variable");
+            let mut path = PathBuf::from(userprofile);
             path.push("Music");
             path
-        };
-        #[cfg(target_os = "windows")]
-        let path = {
-            let home = std::env::var("USERPROFILE").expect("%USERPROFILE% should exist on windows");
+        } else {
+            let home =
+                std::env::var("HOME").expect("Every unix system should have the HOME variable");
             let mut path = PathBuf::from(home);
             path.push("Music");
             path
@@ -72,7 +71,7 @@ impl Default for PlayerConfig {
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct ConfigInner {
+pub struct InnerConfig {
     #[serde(flatten)]
     pub player: PlayerConfig,
     #[serde(rename = "playlist")]
@@ -81,12 +80,12 @@ pub struct ConfigInner {
 }
 
 pub struct Config {
-    path: PathBuf,
-    inner: ConfigInner,
+    pub path: PathBuf,
+    inner: InnerConfig,
 }
 
 impl Deref for Config {
-    type Target = ConfigInner;
+    type Target = InnerConfig;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
@@ -98,38 +97,63 @@ impl DerefMut for Config {
     }
 }
 
-impl Config {
-    pub fn write(&self) {
-        fs::write(&self.path, toml::to_string_pretty(&self.inner).unwrap()).unwrap();
+impl Default for Config {
+    fn default() -> Self {
+        let path = Self::default_path();
+        Self {
+            path,
+            inner: InnerConfig::default(),
+        }
     }
 }
 
-// FIXME: this should instead be a method to return an error when the file couldn't be parsed
-impl Default for Config {
-    fn default() -> Self {
-        #[cfg(target_os = "linux")]
-        let config_dir = std::env::var("HOME").expect("$HOME should exist on linux");
-        #[cfg(target_os = "windows")]
-        let config_dir = std::env::var("APPDATA").expect("%APPDDATA% should exist on windows");
-        let mut path = PathBuf::from(config_dir);
-        #[cfg(target_os = "linux")]
-        path.push(".config");
-        path.push("amuseing");
-        if !path.exists() {
-            fs::create_dir(&path).unwrap();
-        }
-        path.push("config.toml");
-        let mut inner = if path.exists() {
-            let toml_str = fs::read_to_string(&path).unwrap();
-            toml::from_str(&toml_str).inspect_err(|e| error!("Error parsing config file: {e}")).unwrap()
+impl Config {
+    /// Try to write the config to the file system.
+    ///
+    /// Fails if the config has invalid data (serialization error), or the write failed.
+    pub fn write(&self) -> Result<(), ConfigError> {
+        Ok(fs::write(&self.path, toml::to_string_pretty(&self.inner)?)?)
+    }
+
+    /// Gets the default config path (`~/.config/amuseing/` on unix systems, `%APPDATA%/amuseing/` on windows).
+    pub fn default_path() -> PathBuf {
+        let mut path = if cfg!(windows) {
+            let appdata = std::env::var("APPDATA")
+                .expect("Every windows system should have the %APPDATA% variable");
+            PathBuf::from(appdata)
         } else {
-            let config = ConfigInner::default();
-            fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
-            config
+            let home =
+                std::env::var("HOME").expect("Every unix system should have a HOME variable");
+            let mut path = PathBuf::from(home);
+            path.push(".config");
+            path
         };
+        path.push("amuseing");
+        path
+    }
+
+    /// Get the config from the [`default_path]`.
+    ///
+    /// Use `Result::unwrap_or_default` to get the default config, and optionally write it with [`write`].
+    ///
+    /// [`default_path`]: Self::default_path
+    /// [`write`]: Self::write
+    pub fn from_default_path() -> Result<Self, ConfigError> {
+        let path = Self::default_path();
+        Self::from_path(path)
+    }
+
+    /// Get config from given `path`
+    ///
+    /// Fails if the `path` is invalid or it could not be parsed
+    fn from_path(mut path: PathBuf) -> Result<Self, ConfigError> {
+        path.push("config.toml");
+        let toml_str = fs::read_to_string(&path)?;
+        let mut inner: InnerConfig =
+            toml::from_str(&toml_str).inspect_err(|e| error!("Error parsing config file: {e}"))?;
         for playlist in inner.playlists.iter_mut() {
             playlist.check_exists();
         }
-        Self { path, inner }
+        Ok(Self { path, inner })
     }
 }
