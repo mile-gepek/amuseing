@@ -3,6 +3,7 @@
 use clap::Parser;
 use log::{debug, error, info, warn};
 
+use core::f32;
 use std::{sync::mpsc::Receiver, time::Duration};
 
 use amuseing::{
@@ -12,6 +13,8 @@ use amuseing::{
 };
 use egui::{include_image, Button, FontData, FontDefinitions, Ui, Widget};
 
+const MIN_WINDOW_WIDTH: f32 = 600.;
+const MIN_WINDOW_HEIGHT: f32 = 400.;
 const BUTTON_CORNER_RADIUS: u8 = 10;
 const BUTTON_SPACING: f32 = 5.;
 
@@ -208,11 +211,26 @@ struct UiPlaylistInfo {
     valid: Vec<bool>,
 }
 
+#[derive(Copy, Clone, Debug)]
+struct PlaylistModal {
+    playlist_idx: usize,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct SongModal;
+
+#[derive(Copy, Clone, Debug)]
+struct UiModalInfo {
+    playlist_modal_info: Option<PlaylistModal>,
+    song_modal: Option<SongModal>,
+}
+
 struct AmuseingApp {
     player: Player,
     config: Config,
     ui_playlist_info: UiPlaylistInfo,
     player_update: Option<Receiver<PlayerUpdate>>,
+    ui_modal_info: UiModalInfo,
 }
 
 impl AmuseingApp {
@@ -262,6 +280,10 @@ impl AmuseingApp {
                 .map(|playlist| playlist.is_valid())
                 .collect(),
         };
+        let ui_modal_info = UiModalInfo {
+            playlist_modal_info: None,
+            song_modal: None,
+        };
         let mut player = Player::new(config.player.volume);
         {
             let mut queue = player.queue_mut();
@@ -273,6 +295,7 @@ impl AmuseingApp {
             player,
             config,
             ui_playlist_info,
+            ui_modal_info,
             player_update,
         }
     }
@@ -408,11 +431,23 @@ impl eframe::App for AmuseingApp {
                                 };
                                 self.change_playlist(ui, songs, playlist_idx, 0);
                             }
+                            if ui.button("Edit playlist").clicked() {
+                                self.ui_modal_info.playlist_modal_info = Some(PlaylistModal { playlist_idx });
+                            }
                         });
                     }
                 },
             )
         });
+        if let Some(playlist_modal) = self.ui_modal_info.playlist_modal_info {
+            let playlist_edit_modal = egui::Modal::new(egui::Id::new("Playlist edit modal"));
+            let r = playlist_edit_modal.show(ctx, |ui| {
+                let playlist = &mut self.config.playlists[playlist_modal.playlist_idx];
+                if ui.button("AA").clicked() {
+                    self.ui_modal_info.playlist_modal_info = None;
+                }
+            });
+        }
         let central_panel = egui::CentralPanel::default();
         central_panel.show(ctx, |ui| {
             if let Some((selected_playlist_id, selected_songs)) =
