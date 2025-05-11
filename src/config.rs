@@ -149,11 +149,8 @@ impl Config {
     fn from_path(mut path: PathBuf) -> Result<Self, ConfigError> {
         path.push("config.toml");
         let toml_str = fs::read_to_string(&path)?;
-        let mut inner: InnerConfig =
+        let inner: InnerConfig =
             toml::from_str(&toml_str).inspect_err(|e| error!("Error parsing config file: {e}"))?;
-        for playlist in inner.playlists.iter_mut() {
-            playlist.check_exists();
-        }
         Ok(Self { path, inner })
     }
 }

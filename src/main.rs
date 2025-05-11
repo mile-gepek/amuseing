@@ -82,14 +82,16 @@ struct PlaylistButton<'a> {
     playlist: &'a Playlist,
     height: f32,
     selected: bool,
+    is_valid: bool,
 }
 
 impl<'a> PlaylistButton<'a> {
-    fn new(playlist: &'a Playlist, height: f32, selected: bool) -> Self {
+    fn new(playlist: &'a Playlist, height: f32, selected: bool, is_valid: bool) -> Self {
         Self {
             playlist,
             height,
             selected,
+            is_valid,
         }
     }
 }
@@ -100,7 +102,7 @@ impl Widget for PlaylistButton<'_> {
         ui.vertical(|ui| {
             let mut size = ui.available_size();
             size.y = self.height;
-            let image = if !self.playlist.exists() {
+            let image = if !self.is_valid {
                 ui.style_mut().visuals.selection.stroke.color =
                     egui::Color32::from_rgb(255, 165, 0);
                 Some(
@@ -112,7 +114,7 @@ impl Widget for PlaylistButton<'_> {
             };
             let button = Button::opt_image_and_text(image, Some(self.playlist.name().into()))
                 .min_size(size)
-                .selected(self.selected || !self.playlist.exists())
+                .selected(self.selected || !self.is_valid)
                 .corner_radius(BUTTON_CORNER_RADIUS);
             ui.add(button)
         })
@@ -202,6 +204,8 @@ struct UiPlaylistInfo {
     selected: Option<(usize, Vec<Song>)>,
     /// The index of the playlist that's currently playing, and the index of the Song inside playlist
     active: Option<(usize, usize)>,
+    /// Which playlists have valid paths
+    valid: Vec<bool>,
 }
 
 struct AmuseingApp {
@@ -252,6 +256,11 @@ impl AmuseingApp {
         let ui_playlist_info = UiPlaylistInfo {
             selected: None,
             active: Some((0, 0)),
+            valid: config
+                .playlists
+                .iter()
+                .map(|playlist| playlist.is_valid())
+                .collect(),
         };
         let mut player = Player::new(config.player.volume);
         {
@@ -306,10 +315,11 @@ impl eframe::App for AmuseingApp {
         if let Some(player_update) = &self.player_update {
             for message in player_update.try_iter() {
                 match message {
-                    PlayerUpdate::SongChange { song: _, index } => {
+                    PlayerUpdate::SongChange { song_info } => {
                         if let Some((_, active_song_id)) = self.ui_playlist_info.active.as_mut() {
-                            // Yes I know this sets the active song ID twice when a song is clicked, whatcha gonna do about it
-                            *active_song_id = index;
+                            if let Some((index, _)) = song_info {
+                                *active_song_id = index;
+                            }
                         }
                     }
                     _ => {}
@@ -349,7 +359,8 @@ impl eframe::App for AmuseingApp {
                 |ui, row_range| {
                     let start = row_range.start;
                     ui.style_mut().spacing.item_spacing.y = BUTTON_SPACING;
-                    for (i, playlist) in self.config.playlists[row_range].iter_mut().enumerate() {
+                    for (i, playlist) in self.config.playlists.clone()[row_range].iter().enumerate()
+                    {
                         let playlist_idx = i + start;
                         // Option::is_some_and would require a clone :(
                         let selected = if let Some((selected_playlist_id, _)) =
@@ -359,11 +370,13 @@ impl eframe::App for AmuseingApp {
                         } else {
                             false
                         };
-                        if ui
-                            .add(PlaylistButton::new(&playlist, ROW_HEIGHT, selected))
-                            .clicked()
-                        {
-                            if !playlist.check_exists() {
+                        let is_valid = &mut self.ui_playlist_info.valid[playlist_idx];
+                        let playlist_button_resp = ui.add(PlaylistButton::new(
+                            &playlist, ROW_HEIGHT, selected, *is_valid,
+                        ));
+                        if playlist_button_resp.clicked() {
+                            *is_valid = playlist.is_valid();
+                            if !*is_valid {
                                 warn!(
                                     "Tried to select playlist '{}' with invalid path '{}'",
                                     playlist.name(),
@@ -388,6 +401,14 @@ impl eframe::App for AmuseingApp {
                                 );
                             }
                         }
+                        playlist_button_resp.context_menu(|ui| {
+                            if ui.button("Start playlist").clicked() {
+                                let Ok(songs) = playlist.songs() else {
+                                    return;
+                                };
+                                self.change_playlist(ui, songs, playlist_idx, 0);
+                            }
+                        });
                     }
                 },
             )
@@ -415,16 +436,12 @@ impl eframe::App for AmuseingApp {
                             ui.style_mut().spacing.item_spacing.y = BUTTON_SPACING;
                             for (i, song) in selected_songs[row_range].iter().enumerate() {
                                 let song_idx = i + start;
-                                // let song_selected = self.active_playlist_id.is_some_and(|active_playlist_id| {
-                                //     selected_playlist_id == active_playlist_id && song_idx == *song.id()
-                                // });
                                 let song_selected = self.ui_playlist_info.active.is_some_and(
                                     |(active_playlist_id, active_song_id)| {
                                         selected_playlist_id == active_playlist_id
                                             && song_idx == active_song_id
                                     },
                                 );
-                                // dbg!(song_idx, song.id());
                                 let button_resp =
                                     ui.add(SongButton::new(&song, ROW_HEIGHT, song_selected));
                                 if button_resp.clicked() {

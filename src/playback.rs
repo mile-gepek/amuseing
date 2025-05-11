@@ -126,7 +126,6 @@ pub struct Playlist {
     name: String,
     path: PathBuf,
     #[serde(skip)]
-    exists: bool,
     icon_path: Option<PathBuf>,
 }
 
@@ -134,29 +133,23 @@ impl Playlist {
     pub fn new(path: PathBuf, name: String, icon_path: Option<PathBuf>) -> io::Result<Self> {
         let path = path.canonicalize()?;
         Ok(Self {
-            exists: path.exists(),
             path,
             name,
             icon_path,
         })
     }
 
-    /// Check and update the internal `exists` flag if the path exists/doesn't exist on the system, returns that same result
-    pub fn check_exists(&mut self) -> bool {
-        self.exists = self.path.exists();
-        if !self.exists {
+    /// Check if the path exists and is a directory
+    pub fn is_valid(&self) -> bool {
+        let exists = self.path.metadata().is_ok_and(|meta| meta.is_dir());
+        if !exists {
             warn!(
                 "Playlist '{}' has invalid path: '{}'",
                 self.name,
                 self.path.display()
             );
         }
-        self.exists
-    }
-
-    /// Return the internal flag
-    pub fn exists(&self) -> bool {
-        self.exists
+        exists
     }
 
     pub fn name(&self) -> &str {
@@ -292,14 +285,15 @@ impl AtomicMilliseconds {
 }
 
 pub enum PlayerUpdate {
-    SongChange { index: usize, song: Option<Song> },
+    SongChange { song_info: Option<(usize, Song)> },
     DeviceDisconnect,
     // DeviceChange(),
     // StateChange,
 }
+
 impl PlayerUpdate {
-    fn song_change(index: usize, song: Option<Song>) -> PlayerUpdate {
-        Self::SongChange { song, index }
+    fn song_change(song_info: Option<(usize, Song)>) -> Self {
+        Self::SongChange { song_info }
     }
 }
 
@@ -331,7 +325,7 @@ impl Player {
     /// Return a MutexGuard for the Player's `Queue`.
     ///
     /// Avoid any other methods that lock the queue until this Guard is dropped or it will result in a deadlock
-    /// 
+    ///
     /// [`Queue`]: Queue
     pub fn queue_mut(&mut self) -> MutexGuard<Queue<Song>> {
         self.queue.lock().unwrap()
@@ -369,7 +363,7 @@ impl Player {
     /// Return the state of the audio decoding thread.
     ///
     /// NOTE: the metods [`pause`], [`resume`], [`quit`], and [`stop`] don't update the state automatically so using this method may result in a race condition.
-    /// 
+    ///
     /// [`pause`]: Self::pause
     /// [`resume`]: Self::resume
     /// [`quit`]: Self::quit
@@ -492,8 +486,8 @@ impl Player {
                     let mut queue_lock = queue.lock().unwrap();
                     let next_song = queue_lock.next_item().cloned();
                     let index = queue_lock.index();
-                    let _ =
-                        player_update_tx.send(PlayerUpdate::song_change(index, next_song.clone()));
+                    let song_info = Some(index).zip(next_song.clone());
+                    let _ = player_update_tx.send(PlayerUpdate::song_change(song_info));
                     let Some(song) = next_song else {
                         break;
                     };
