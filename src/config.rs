@@ -7,7 +7,7 @@ use std::{
 use crate::{errors::ConfigError, playback::Playlist};
 use serde::{Deserialize, Serialize};
 
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(transparent)]

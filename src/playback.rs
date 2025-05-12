@@ -2,11 +2,11 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Sample, SampleFormat, SizedSample,
 };
-use log::{debug, error, info, warn};
 use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
     HeapRb,
 };
+use tracing::{info, warn, debug, error};
 use rubato::{FftFixedIn, Resampler};
 use serde::{Deserialize, Serialize};
 use std::{

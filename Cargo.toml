@@ -9,8 +9,6 @@ edition = "2021"
 [dependencies]
 cpal = "0.15.3"
 dioxus = { version = "0.6.0", features = [] }
-env_logger = "0.11.8"
-log = "0.4.27"
 ringbuf = "0.4.8"
 rubato = "0.16.2"
 serde = "1.0.219"
@@ -19,6 +17,7 @@ symphonia-bundle-mp3 = "0.5.4"
 thiserror = "2.0.12"
 tokio = "1.45.0"
 toml = "0.8.22"
+tracing = "0.1.41"
 triple_buffer = "8.1.1"
 
 [features]
@@ -29,8 +28,6 @@ web = ["dioxus/web"]
 desktop = ["dioxus/desktop"]
 # The feature that are only required for the mobile = ["dioxus/mobile"] build target should be optional and only enabled in the mobile = ["dioxus/mobile"] feature
 mobile = ["dioxus/mobile"]
-
-[profile]
 
 [profile.wasm-dev]
 inherits = "dev"
