@@ -121,7 +121,7 @@ impl Song {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub struct Playlist {
     name: String,
     path: PathBuf,
@@ -274,6 +274,11 @@ impl AtomicMilliseconds {
         Self(AtomicU64::new(millis))
     }
 
+    pub fn as_secs(&self) -> u64 {
+        let millis = self.0.load(Ordering::Relaxed);
+        millis / 1000
+    }
+
     pub fn as_secs_f64(&self) -> f64 {
         let millis = self.0.load(Ordering::Relaxed);
         millis as f64 / 1000.
@@ -284,6 +289,21 @@ impl AtomicMilliseconds {
     }
 }
 
+impl Into<Duration> for AtomicMilliseconds {
+    fn into(self) -> Duration {
+        let millis = self.0.load(Ordering::Relaxed);
+        Duration::from_millis(millis)
+    }
+}
+
+impl Into<Duration> for &AtomicMilliseconds {
+    fn into(self) -> Duration {
+        let millis = self.0.load(Ordering::Relaxed);
+        Duration::from_millis(millis)
+    }
+}
+
+#[derive(Debug)]
 pub enum PlayerUpdate {
     SongChange { song_info: Option<(usize, Song)> },
     DeviceDisconnect,
@@ -297,6 +317,7 @@ impl PlayerUpdate {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Player {
     queue: Arc<Mutex<Queue<Song>>>,
     state: Arc<Mutex<PlayerState>>,

@@ -16,7 +16,7 @@ pub enum PlayerStartError {
 /// Returned when [`Player::seek_duration`] fails.
 ///
 /// This can be because the duration given was out of bounds, or because the method was called when there was no song playing
-/// 
+///
 /// [`Player::seek_duration`]: crate::playback::Player::seek_duration
 #[derive(Debug, Error)]
 pub enum SeekError {
