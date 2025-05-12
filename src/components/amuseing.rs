@@ -68,17 +68,32 @@ fn PlaylistButton(props: PlaylistProp) -> Element {
 
 #[component]
 fn PlaylistPanel() -> Element {
+    // FIXME: should not rerender on any config change, only on playlist changes
     let config = use_context::<Signal<Config>>();
     rsx! {
         div {
             class: "playlist-panel",
-            for playlist in config.read().playlists.iter() {
-                PlaylistButton { playlist: playlist.clone() }
+            div {
+                class: "playlist-panel-buttons",
+                button {
+                    "+"
+                }
+                button {
+                    "0"
+                }
+                button {
+
+                }
+            }
+            div {
+                class: "playlist-list",
+                for playlist in config.read().playlists.iter() {
+                    PlaylistButton { playlist: playlist.clone() }
+                }
             }
         }
     }
 }
-
 
 #[component]
 fn SeekBar() -> Element {
@@ -150,8 +165,7 @@ fn SongDisplay() -> Element {
             }
         }
     } else {
-        rsx! {
-        }
+        rsx! {}
     }
 }
 
@@ -267,13 +281,15 @@ pub fn Amuseing() -> Element {
                     match message {
                         PlayerUpdate::SongChange { song_info } => {
                             if let Some((new_song_index, _)) = song_info {
-                                if let Some((_, active_song_index)) = player_info.active_indexes.write().as_mut() {
+                                if let Some((_, active_song_index)) =
+                                    player_info.active_indexes.write().as_mut()
+                                {
                                     *active_song_index = new_song_index;
                                 }
                             } else {
                                 player_info.active_indexes.set(None);
                             }
-                        },
+                        }
                         message => {
                             tracing::debug!("{:?}", message);
                         }
