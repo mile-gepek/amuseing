@@ -16,6 +16,12 @@ pub struct Playlists {
     playlists: Vec<Playlist>,
 }
 
+impl Playlists {
+    pub fn inner(&self) -> &[Playlist] {
+        &self.playlists
+    }
+}
+
 impl Deref for Playlists {
     type Target = Vec<Playlist>;
     fn deref(&self) -> &Self::Target {
