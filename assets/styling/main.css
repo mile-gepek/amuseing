@@ -72,7 +72,7 @@ button {
 .playlist-button {
   display: flex;
   justify-content: space-between;
-  height: 70px;
+  height: 80px;
   background: #31313b;
   border-radius: 0 10px 10px 0;
   align-items: center;
