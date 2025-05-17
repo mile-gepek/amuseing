@@ -49,27 +49,67 @@ impl DerefMut for UpdateSeekBar {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+struct PlaylistsState {
+    playlists: Signal<Vec<Signal<Playlist>>>,
+}
+impl PlaylistsState {
+    fn new(playlists: &[Playlist]) -> Self {
+        Self {
+            playlists: Signal::new(
+                playlists
+                    .to_vec()
+                    .into_iter()
+                    .map(|playlist| Signal::new(playlist))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 #[derive(PartialEq, Props, Clone)]
 struct PlaylistProp {
     playlist: Playlist,
+    index: usize,
+    selected: bool,
 }
 
 #[component]
 fn PlaylistButton(props: PlaylistProp) -> Element {
+    let mut div_class = "playlist-button".to_string();
+    let mut is_valid = use_signal(|| props.playlist.is_valid());
+    if !is_valid() {
+        div_class += " playlist-invalid";
+    } else if props.selected {
+        div_class += " playlist-selected";
+    }
+    static INVALID_PLAYLIST_ICON: Asset = asset!("/assets/icons/warning.svg");
+    let mut selected_index = use_context::<PlayerInfo>().selected_playlist_index;
+    let index = props.index;
     rsx! {
-        div {
-            class: "playlist-button",
+        button {
+            class: div_class,
+            onclick: move |_| {
+                selected_index.set(Some(index));
+                is_valid.set(props.playlist.is_valid());
+            },
             p {
                 { props.playlist.name() }
             }
+            if !is_valid() {
+                img {
+                    class: "invalid-playlist-icon",
+                    src: INVALID_PLAYLIST_ICON,
+                }
+            },
         }
     }
 }
 
 #[component]
 fn PlaylistPanel() -> Element {
-    // FIXME: should not rerender on any config change, only on playlist changes
-    let config = use_context::<Signal<Config>>();
+    let playlists = use_context::<PlaylistsState>().playlists;
+    let selected_index = use_context::<PlayerInfo>().selected_playlist_index;
     rsx! {
         div {
             class: "playlist-panel",
@@ -87,8 +127,12 @@ fn PlaylistPanel() -> Element {
             }
             div {
                 class: "playlist-list",
-                for playlist in config.read().playlists.iter() {
-                    PlaylistButton { playlist: playlist.clone() }
+                for (i, playlist) in playlists.read().iter().enumerate() {
+                    PlaylistButton {
+                        playlist: playlist.read().clone(),
+                        index: i,
+                        selected: selected_index.read().is_some_and(|index| index == i),
+                    }
                 }
             }
         }
@@ -97,12 +141,13 @@ fn PlaylistPanel() -> Element {
 
 #[component]
 fn SeekBar() -> Element {
-    let player_info = use_context::<PlayerInfo>();
+    let mut player_info = use_context::<PlayerInfo>();
     let mut player = player_info.player;
     let mut should_update = use_context::<UpdateSeekBar>();
 
     let seek = move |event: Event<FormData>| {
         let value = event.value().parse::<f64>().unwrap();
+        player_info.seek_bar_position.set(value);
         let percent = value / 100.;
         let Some(song) = player.read().current() else {
             return;
@@ -248,12 +293,14 @@ fn BottomPanel() -> Element {
 #[component]
 pub fn Amuseing() -> Element {
     let config = Config::from_default_path().unwrap_or_default();
+    let playlists = config.playlists.clone();
     let mut player = Player::new(config.player.volume);
     let songs = config.playlists[1].songs().unwrap();
     player.set_songs(songs);
     let player_update = player.run(config.player.buffer_size).ok();
     let mut player_info = use_context_provider(|| PlayerInfo::new(player, player_update));
-    let config = use_context_provider(|| Signal::new(config));
+    let config_context = use_context_provider(|| Signal::new(config));
+    let playlists_context = use_context_provider(|| PlaylistsState::new(playlists.inner()));
     let update_seek_bar = use_context_provider(|| UpdateSeekBar(Signal::new(true)));
 
     // 100ms loop to update any component that depends on `player`

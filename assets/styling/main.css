@@ -6,6 +6,10 @@ html {
   height: 100%;
 }
 
+* {
+  font-size: 1rem;
+}
+
 body {
   background-color: #0f1116;
   color: #ffffff;
@@ -34,7 +38,7 @@ button {
 
 .playlist-panel {
   height: 100%;
-  width: 30%;
+  width: 28%;
   border-right: 1px gray solid;
   display: flex;
   flex-direction: column;
@@ -45,9 +49,9 @@ button {
   height: 40px;
   border-bottom: 1px solid gray;
   display: flex;
-  justify-content: end;
+  /* justify-content: center; */
   align-items: center;
-  padding: 10px;
+  padding: 5px;
   gap: 5px;
 }
 
@@ -61,21 +65,32 @@ button {
   flex-direction: column;
   justify-content: start;
   padding-top: 10px;
-  padding-left: 10px;
+  padding-right: 10px;
   gap: 6px;
 }
 
 .playlist-button {
   display: flex;
+  justify-content: space-between;
   height: 70px;
   background: #31313b;
-  border-radius: 10px 0 0 10px;
+  border-radius: 0 10px 10px 0;
   align-items: center;
-  padding: 0 10px;
 }
 
-.playlist-button p {
-  margin: 0;
+.playlist-button.playlist-selected {
+  background: #41414b;
+}
+
+.playlist-button.playlist-invalid {
+  border: 1px solid #FFA500;
+  border-left: none;
+}
+
+.invalid-playlist-icon {
+  margin-right: 10px;
+  height: 50%;
+  aspect-ratio: 1;
 }
 
 footer.bottom-panel {
