@@ -153,7 +153,7 @@ fn SeekBar() -> Element {
             return;
         };
         let duration = song.duration();
-        let _ = player.write().seek_duration(duration.mul_f64(percent));
+        let _ = player.write().seek(duration.mul_f64(percent));
     };
 
     let value = player_info.seek_bar_position;
