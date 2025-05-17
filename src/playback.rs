@@ -6,7 +6,6 @@ use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
     HeapRb,
 };
-use tracing::{info, warn, debug, error};
 use rubato::{FftFixedIn, Resampler};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -31,6 +30,7 @@ use symphonia::core::{
     units,
 };
 use symphonia_bundle_mp3::{MpaDecoder, MpaReader};
+use tracing::{debug, error, info, warn};
 use triple_buffer::{triple_buffer, Output};
 
 type SampleType = f64;
@@ -121,7 +121,7 @@ impl Song {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub struct Playlist {
     name: String,
     path: PathBuf,
@@ -634,6 +634,7 @@ impl Player {
                         }
                     }
                     if sample_deque.is_empty() {
+                        // FIXME: Err(ResetRequired) can be handled gracefully
                         let Ok(packet) = reader.next_packet() else {
                             break 'song_loop;
                         };
@@ -655,7 +656,10 @@ impl Player {
                         let dur: Duration = time_base.calc_time(packet.ts()).into();
                         time_playing.set_millis(dur.as_millis() as u64);
                     }
-                    std::thread::sleep(Duration::from_millis(5))
+
+                    // This sleep ensures the loop doesn't run too fast to kill the CPU.
+                    // It is also part of the reason low ring buffer sizes cause jittery audio.
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             }
             {
@@ -669,7 +673,7 @@ impl Player {
 
     /// Seek to the given duration in the song, if one is currently playing.
     ///
-    /// If the duration is longer than the maximum duration returns an error.
+    /// Errors if the duration is longer than the maximum duration.
     pub fn seek_duration(&mut self, duration: Duration) -> Result<bool, SeekError> {
         let duration_max = self.current().ok_or(SeekError::NoCurrentSong)?.duration;
         if duration > duration_max {
