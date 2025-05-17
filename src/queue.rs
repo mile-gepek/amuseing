@@ -2,14 +2,21 @@ use std::fmt::Display;
 
 use crate::errors::OutOfBoundsError;
 
+/// Controls the behaviour of the [`Queue::next_item`] method.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum RepeatMode {
+    /// The queue does not repeat. Calls to [`next_item`] return None until the RepeatMode is changed.
+    ///
+    /// [`next_item`]: Queue::next_item
     Off,
+    /// The queue returns the same item on repeat, this includes None if the current index is larger than the length of the items.
     Single,
+    /// The queue loops back to the start after reaching the end.
     All,
 }
 
 impl RepeatMode {
+    /// Returns the next repeat mode in the cycle: All => Single => Off => All.
     pub fn next(&self) -> Self {
         match *self {
             Self::All => Self::Single,
@@ -63,20 +70,24 @@ impl<T> Queue<T> {
 
     /// Return the next item in the queue, depending on the [`RepeatMode`].
     ///
-    /// If the queue is not empty, the first call is gives the first item, regardless of the repeat mode.
-    /// Calling `next` after [`jump`], [`skip`] or [`rewind`] also guarantees the next item, regardless of the repeat mode.
+    /// If the queue is not empty, the first call always gives the first item, regardless of the repeat mode.
+    /// Calling `next_item` after [`jump`], [`skip`] or [`rewind`] also guarantees the next item's position, regardless of the repeat mode.
+    ///
+    /// This means that [`jump`]ing to index 5, and calling [`next_item`] will return the 6th item, or None if that's outside the queue.
+    ///
+    /// This method updates the index on call.
+    /// The index is not updated if the repeat mode is [`Off`] and the method returns None.
     ///
     /// [`jump`]: Self::jump
     /// [`skip`]: Self::skip
     /// [`rewind`]: Self::rewind
+    /// [`next_item`]: Self::next_item
     ///
     /// # Iteration rules
     ///
-    /// If we reach the end of the queue, and the repeat mode is [`All`], the queue will wrap around to the beginning.
-    ///
-    /// If it is [`Single`], the same element will be returned every time.
-    ///
-    /// If it is [`Off`], this method will return None, and the internal index will not be updated.
+    /// If the repeat mode is [`All`], the queue will wrap around to the beginning when it reached the end.
+    /// If it is [`Single`], the same value will be returned every time, even if it is None.
+    /// If it is [`Off`], the queue will return None after reaching the end.
     ///
     /// [`All`]: RepeatMode::All
     /// [`Single`]: RepeatMode::Single
@@ -98,22 +109,32 @@ impl<T> Queue<T> {
         self.items.get(self.index)
     }
 
+    /// Return a slice of the items in the queue.
     pub fn items(&self) -> &[T] {
         &self.items
     }
 
+    /// Return a mutable slice of the items in the queue.
+    pub fn items_mut(&mut self) -> &mut [T] {
+        &mut self.items
+    }
+
+    /// Return true if the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
+    /// The index of the current (last returned) item. This index can be outside the queue if the last returned item was None.
     pub fn index(&self) -> usize {
         self.index
     }
 
+    /// Push an item onto the internal Vec.
     pub fn push(&mut self, item: T) {
         self.items.push(item);
     }
 
+    /// Clears the internal Vec, and sets the index to 0.
     pub fn clear(&mut self) {
         self.items.clear();
         self.index = 0;
@@ -192,7 +213,7 @@ impl<T> Queue<T> {
             .expect("Calculated jump from rewind shouldn't fail");
     }
 
-    /// Return a reference to the element that was last returned.
+    /// Return a reference to the current element (the element that was last returned).
     pub fn current(&self) -> Option<&T> {
         self.items.get(self.index)
     }

@@ -2,22 +2,24 @@ use std::fmt::Debug;
 use std::time::Duration;
 use thiserror::Error;
 
-/// Returned by [`Player::run`] if the player is still running.
+/// Returned by [`Player::run`].
 ///
 /// [`Player::run`]: crate::playback::Player::run
 #[derive(Debug, Error)]
 pub enum PlayerStartError {
+    /// This player was already started.
     #[error("The player is already running")]
     Running,
+    /// The player was started with an empty queue.
     #[error("The player was started while the queue was empty")]
     EmptyQueue,
 }
 
-/// Returned when [`Player::seek_duration`] fails.
+/// Returned when [`Player::seek`] fails.
 ///
 /// This can be because the duration given was out of bounds, or because the method was called when there was no song playing
 ///
-/// [`Player::seek_duration`]: crate::playback::Player::seek_duration
+/// [`Player::seek`]: crate::playback::Player::seek
 #[derive(Debug, Error)]
 pub enum SeekError {
     #[error("Out of bounds error when seeking: {0}")]

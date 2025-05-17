@@ -46,9 +46,9 @@ use crate::queue::{Queue, RepeatMode};
 ///
 /// Songs should be created with [`from_path`].
 ///
-/// [`from_path`]: Self::from_path
-///
 /// The duration of the song is automatically calculated when created.
+///
+/// [`from_path`]: Self::from_path
 #[derive(Clone, Debug)]
 pub struct Song {
     id: usize,
@@ -100,6 +100,9 @@ impl Song {
     }
 
     // Feels kinda dumb to have to get a reader for duration, and later for actually reading the data
+    /// Try to get an [`MpaReader`] for this song.
+    ///
+    /// [`MpaReader`]: symphonia_bundle_mp3::MpaReader
     fn reader(path: &PathBuf) -> SymphoniaResult<MpaReader> {
         let file = fs::File::open(path)?;
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -121,6 +124,11 @@ impl Song {
     }
 }
 
+/// Represents a playlist shown in the UI, playlists are created from the config file.
+///
+/// This struct doesn't actually hold the `Song`s, instead they should be collected with [`songs`]
+///
+/// [`songs`]: Self::songs
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub struct Playlist {
     name: String,
@@ -130,6 +138,7 @@ pub struct Playlist {
 }
 
 impl Playlist {
+    /// Create a new playlist.
     pub fn new(path: PathBuf, name: String, icon_path: Option<PathBuf>) -> io::Result<Self> {
         let path = path.canonicalize()?;
         Ok(Self {
@@ -140,6 +149,8 @@ impl Playlist {
     }
 
     /// Check if the path exists and is a directory
+    ///
+    /// NOTE: this calls [`Path::metadata`] which is a system call.
     pub fn is_valid(&self) -> bool {
         let exists = self.path.metadata().is_ok_and(|meta| meta.is_dir());
         if !exists {
@@ -190,22 +201,48 @@ impl Playlist {
     }
 }
 
+/// Possible states the Player can be in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PlayerState {
+    /// The audio decoding thread stops decoding audio and the OS stream is paused.
     Paused,
+    /// The player is decoding audio for the current `Song` and the OS stream is playing it.
     Playing,
+    /// The player was started and finished.
     Finished,
+    /// The player wasn't started yet.
     NotStarted,
 }
 
+/// Possible messages for `Player::send_message`.
+///
+/// NOTE: The messages aren't received instantly, the `Player` thread continually checks a channel for any incoming message.
 pub enum PlayerMessage {
+    /// Stop the current song. See [`stop`].
+    ///
+    /// [`stop`]: Player::stop
     Stop,
+    /// Pause playback. See [`pause`].
+    ///
+    /// [`pause`]: Player::pause
     Pause,
+    /// Resume playback. See [`resume`].
+    ///
+    /// [`resume`]: Player::resume
     Resume,
+    /// Seek to the given Duration. See [`seek`].
+    ///
+    /// [`seek`]: Player::seek
     Seek(Duration),
+    /// Quit playback entirely. See [`quit`].
+    ///
+    /// [`quit`]: Player::quit
     Quit,
 }
 
+/// Stores two atomic numbers, `percent` and `multiplier` which are used to controls the volume for a `Player`.
+///
+/// If I messed up the math please fix it.
 #[derive(Debug)]
 pub struct AtomicVolume {
     percent: AtomicU64,
@@ -213,17 +250,24 @@ pub struct AtomicVolume {
 }
 
 impl AtomicVolume {
+    /// The apparent the volume should be at.
+    ///
+    /// Basically, 0.5 means half of maximum loudness (currently hardcoded as 60dB), 0.1 is 10%, and so on..
     pub fn percent(&self) -> f64 {
         let as_u64 = self.percent.load(Ordering::Relaxed);
         f64::from_bits(as_u64)
     }
 
+    /// The actual factor the amplitude of the wave has to be multiplied by to achieve the [`percent`] apparent loudness.
+    ///
+    /// [`percent`]: Self::percent
     pub fn multiplier(&self) -> f64 {
         let as_u64 = self.multiplier.load(Ordering::Relaxed);
         f64::from_bits(as_u64)
     }
 
-    fn set_volume(&self, other: &Self) {
+    /// Transfer the values from `other` into `self`.
+    fn set(&self, other: &Self) {
         let percent = other.percent.load(Ordering::Acquire);
         let multiplier = other.multiplier.load(Ordering::Acquire);
         self.percent.store(percent, Ordering::Relaxed);
@@ -303,20 +347,34 @@ impl Into<Duration> for &AtomicMilliseconds {
     }
 }
 
+/// Player updates sent from the receiver created by [`Player::run`]
 #[derive(Debug)]
 pub enum PlayerUpdate {
+    /// The song has been changed.
+    ///
+    /// If Some, the first element is the index in the `Queue`, and the second the `Song` itself. If None, the player is or has exited.
     SongChange { song_info: Option<(usize, Song)> },
+    /// The device was disconnected.
     DeviceDisconnect,
     // DeviceChange(),
     // StateChange,
 }
 
 impl PlayerUpdate {
+    /// See [`SongChange`].
+    ///
+    /// [`SongChange`]: Self::SongChange
     fn song_change(song_info: Option<(usize, Song)>) -> Self {
         Self::SongChange { song_info }
     }
 }
 
+/// Control struct for easy audio playback from a given [`Queue`].
+/// The player can be started with the [`run`] method, and controlled with methods like [`pause`].
+///
+/// [`Queue`]: crate::queue::Queue
+/// [`run`]: Self::run
+/// [`pause`]: Self::pause
 #[derive(Clone, Debug)]
 pub struct Player {
     queue: Arc<Mutex<Queue<Song>>>,
@@ -354,7 +412,7 @@ impl Player {
 
     /// Set the player's volume.
     pub fn set_volume(&mut self, volume: &AtomicVolume) {
-        self.volume.set_volume(volume);
+        self.volume.set(volume);
     }
 
     /// Get the player's volume
@@ -403,9 +461,10 @@ impl Player {
 
     /// Send a message to the audio thread to quit playing entirely.
     ///
-    /// NOTE: the player's state is NOT updated to Finished by this call, but by the audio decoding thread.
+    /// NOTE: The player's state is NOT updated to [`Finished`] by this call, but by the audio decoding thread.
     /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
+    /// [`Finished`]: PlayerState::Finished
     /// [`state`]: Self::state
     pub fn quit(&mut self) -> bool {
         self.send_message(PlayerMessage::Quit)
@@ -415,9 +474,10 @@ impl Player {
     ///
     /// If there are more songs waiting in the queue, they will be played after.
     ///
-    /// NOTE: the player's state is NOT updated to Finished (if there are no songs left) by this call, but by the audio thread.
+    /// NOTE: The player's state is NOT updated to [`Finished`] (if there are no songs left) by this call, but by the audio decoding thread.
     /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
+    /// [`Finished`]: PlayerState::Finished
     /// [`state`]: Self::state
     pub fn stop(&mut self) -> bool {
         self.send_message(PlayerMessage::Stop)
@@ -425,9 +485,10 @@ impl Player {
 
     /// Send a message to the audio thread to pause playback.
     ///
-    /// NOTE: the player's state is NOT updated to Paused by this call, but by the audio thread
+    /// NOTE: The player's state is NOT updated to [`Paused`] by this call, but by the audio thread
     /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
+    /// [`Paused`]: PlayerState::Paused
     /// [`state`]: Self::state
     pub fn pause(&mut self) -> bool {
         self.send_message(PlayerMessage::Pause)
@@ -435,17 +496,18 @@ impl Player {
 
     /// Send a message to the audio thread to resume playback.
     ///
-    /// NOTE: the player's state is NOT updated to Playing by this call, but by the audio thread
+    /// NOTE: The player's state is NOT updated to [`Playing`] by this call, but by the audio thread.
     /// This means you should not depend on the [`state`] method for data, as it can result in a race condition.
     ///
+    /// [`Playing`]: PlayerState::Playing
     /// [`state`]: Self::state
     pub fn resume(&mut self) -> bool {
         self.send_message(PlayerMessage::Resume)
     }
 
-    /// Clears and sets the items of the `queue`. Most likely you want to also call `stop` after this
+    /// Clears and sets the items of the [`queue`]. Most likely you also want to call [`stop`] after this.
     ///
-    /// [`queue`]: Queue
+    /// [`queue`]: crate::queue::Queue
     /// [`stop`]: Self::stop
     pub fn set_songs(&mut self, songs: Vec<Song>) {
         let mut queue_lock = self.queue.lock().unwrap();
@@ -453,7 +515,7 @@ impl Player {
         queue_lock.extend(songs.into_iter());
     }
 
-    /// Shortcut for changing the repeat mode of the `queue`.
+    /// Shortcut for changing the repeat mode of the [`queue`].
     ///
     /// [`queue`]: crate::queue::Queue
     pub fn set_repeat_mode(&mut self, repeat_mode: RepeatMode) {
@@ -463,7 +525,7 @@ impl Player {
 
     /// Start the player.
     ///
-    /// This method spawns a seperate thread which continously decodes audio for the current song, and pushes it to a consumer for the cpal library to use
+    /// This method spawns a seperate thread which continously decodes audio for the current song, and pushes it to a consumer for the cpal library to use.
     pub fn run(&mut self, buffer_size: usize) -> Result<Receiver<PlayerUpdate>, PlayerStartError> {
         {
             let mut state_lock = self.state.lock().unwrap();
@@ -495,6 +557,7 @@ impl Player {
             info!("Starting decoder thread");
             // Assume we start at 44.1k;
             let mut last_song_sample_rate = 44100;
+            // This tripe buffer is how we update the cpal thread to resample to the current song's sample rate.
             let (mut sample_rate_update_input, mut sample_rate_update_output) =
                 triple_buffer(&last_song_sample_rate);
             let (mut stream, mut stream_error_rx, mut producer) =
@@ -503,6 +566,7 @@ impl Player {
                     .unwrap();
             stream.play().unwrap();
             'main_loop: loop {
+                // Get a song and its reader and decoder, if the song is empty we break out of the main_loop.
                 let song = {
                     let mut queue_lock = queue.lock().unwrap();
                     let next_song = queue_lock.next_item().cloned();
@@ -523,20 +587,34 @@ impl Player {
                 let track = reader.default_track().unwrap();
                 let track_id = track.id;
                 let time_base = track.codec_params.time_base.unwrap();
+                // Reset the time_playing to 0 because we're playing a new song. Set the state to Playing
                 time_playing.set_millis(0);
                 {
                     let mut state_lock = player_state.lock().unwrap();
                     *state_lock = PlayerState::Playing;
                 }
 
+                // If the song's sample rate is different from the previous one, update the cpal thread's song sample rate.
                 let song_sample_rate = track.codec_params.sample_rate.unwrap();
                 if last_song_sample_rate != song_sample_rate {
                     sample_rate_update_input.write(song_sample_rate);
                     last_song_sample_rate = song_sample_rate;
                 }
 
+                // Decode the song audio in a loop.
+                //
+                // Before loop:
+                // 1. Set up a sample_deque buffer. This is a temporary buffer we write an audio packet into.
+                // 2. Set up a `playing` boolean. This just indicates whether we are paused or not.
+                //
+                // Loop:
+                // 1. Check for incoming stream errors like device disconnects.
+                // 2. Check for incoming player messages, this is how we know to pause, play or stop.
+                // 3. If `playing` is false, skip the rest of the loop as there is no need to decode audio.
+                // 4. If the `sample_deque` buffer is not empty, write samples to the producer while it has space.
+                //    If it is empty, decode an audio packet and write the samples to the producer. The leftover samples are written to the deque.
+                // 5. Sleep so the CPU doesn't burn.
                 let mut sample_deque = VecDeque::new();
-
                 let mut playing = true;
                 'song_loop: loop {
                     match stream_error_rx.try_recv() {
@@ -674,7 +752,7 @@ impl Player {
     /// Seek to the given duration in the song, if one is currently playing.
     ///
     /// Errors if the duration is longer than the maximum duration.
-    pub fn seek_duration(&mut self, duration: Duration) -> Result<bool, SeekError> {
+    pub fn seek(&mut self, duration: Duration) -> Result<bool, SeekError> {
         let duration_max = self.current().ok_or(SeekError::NoCurrentSong)?.duration;
         if duration > duration_max {
             return Err(SeekError::out_of_range(duration, duration_max));
@@ -692,7 +770,7 @@ impl Player {
         let time_playing = self.time_playing.as_secs_f64();
         let rewind_threshold = self.rewind_threshold.as_secs_f64();
         if time_playing > rewind_threshold && self.current().is_some() {
-            self.seek_duration(Duration::from_secs(0))
+            self.seek(Duration::from_secs(0))
                 .expect("Rewinding to 0 with a song playing should not fail");
         } else {
             self.queue_mut().rewind(1);
@@ -700,7 +778,10 @@ impl Player {
         }
     }
 
-    /// Is the player active (Paused or Playing).
+    /// Is the player active (`Paused` or `Playing`).
+    ///
+    /// [`Paused`]: PlayerState::Paused
+    /// [`Playing`]: PlayerState::Playing
     pub fn is_active(&self) -> bool {
         let state = self.state.lock().unwrap();
         matches!(*state, PlayerState::Paused | PlayerState::Playing)
@@ -709,6 +790,7 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        // Quit the player if it was dropped, otherwise we lose control over the thread.
         self.quit();
     }
 }
@@ -761,7 +843,7 @@ where
 
     let sample_rate_in = *sample_rate_update.read() as usize;
     let sample_rate_out = stream_config.sample_rate.0 as usize;
-    // If the input and output sample rates are the same, we can bypass resampling and write the samples as they are
+    // If the input and output sample rates are the same, we can bypass resampling and write the samples as they are.
     let mut bypass_resampler = sample_rate_in == sample_rate_out;
     let mut resampler: FftFixedIn<SampleType> =
         FftFixedIn::new(sample_rate_in, sample_rate_out, CHUNK_SIZE, 1, 2).unwrap();
