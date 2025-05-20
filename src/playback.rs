@@ -49,7 +49,7 @@ use crate::queue::{Queue, RepeatMode};
 /// The duration of the song is automatically calculated when created.
 ///
 /// [`from_path`]: Self::from_path
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Song {
     id: usize,
     title: String,
@@ -81,6 +81,13 @@ impl Song {
 
     pub fn duration(&self) -> &Duration {
         &self.duration
+    }
+
+    /// Check if the song is a valid mp3 file.
+    // TODO: this should probably be done in `new`
+    pub fn is_valid(&self) -> bool {
+        self.path.metadata().is_ok_and(|meta| meta.is_file())
+            && self.path.extension().is_some_and(|ext| ext == "mp3")
     }
 
     /// Create a new Song from a mp3 file at `path`, and automatically calculate the duration from it.
