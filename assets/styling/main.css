@@ -34,11 +34,15 @@ button {
 .content-wrapper {
   display: flex;
   flex-grow: 1;
+  overflow-y: auto;
 }
 
 .playlist-panel {
   height: 100%;
-  width: 28%;
+  flex-basis: auto;
+  width: 30%;
+  min-width: 300px;
+  max-width: 600px;
   border-right: 1px gray solid;
   display: flex;
   flex-direction: column;
@@ -66,15 +70,17 @@ button {
   justify-content: start;
   padding-top: 10px;
   padding-right: 10px;
-  gap: 6px;
+  gap: 7px;
+  overflow-y: auto;
 }
 
 .playlist-button {
   display: flex;
   justify-content: space-between;
+  min-height: 80px;
   height: 80px;
   background: #31313b;
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 20px 20px 0;
   align-items: center;
 }
 
@@ -91,6 +97,72 @@ button {
   margin-right: 10px;
   height: 50%;
   aspect-ratio: 1;
+}
+
+.song-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  padding-right: 0;
+  margin: 0;
+  flex-grow: 1;
+  overflow-y: auto;
+}
+
+.song-component {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 60px;
+  height: 60px;
+  width: 100%;
+  background: var(--generic-button-color);
+  border-radius: 20px 0 0 20px;
+}
+
+.song-component-left {
+  display: flex;
+  flex-grow: 1;
+  align-items: center;
+  gap: 10px;
+  margin-left: 10px;
+}
+
+.song-play-button {
+  height: 30px;
+  aspect-ratio: 1;
+  padding: 0;
+}
+
+.song-icon {
+  height: 100%;
+  width: auto;
+  margin: auto;
+}
+
+.song-component-right {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-right: 20px;
+  gap: 10px;
+}
+
+.song-kebab-button {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 25px;
+  height: 30px;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+}
+
+.kebab-icon {
+  height: 100%;
+  width: auto;
 }
 
 footer.bottom-panel {
