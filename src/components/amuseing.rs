@@ -6,27 +6,23 @@ use std::{
 
 use amuseing::{
     config::Config,
-    playback::{Player, PlayerUpdate, Playlist},
+    playback::{Player, PlayerUpdate, Playlist, Song},
 };
 use dioxus::{logger::tracing, prelude::*};
 
 #[derive(Copy, Clone, Debug)]
-struct PlayerInfo {
+struct AppContext {
     player: Signal<Player>,
     player_update: Signal<Option<Receiver<PlayerUpdate>>>,
-    selected_playlist_index: Signal<Option<usize>>,
-    active_indexes: Signal<Option<(usize, usize)>>,
     is_paused: Signal<bool>,
     seek_bar_position: Signal<f64>,
 }
 
-impl PlayerInfo {
+impl AppContext {
     fn new(player: Player, player_update: Option<Receiver<PlayerUpdate>>) -> Self {
         Self {
             player: Signal::new(player),
             player_update: Signal::new(player_update),
-            selected_playlist_index: Signal::new(None),
-            active_indexes: Signal::new(None),
             is_paused: Signal::new(false),
             seek_bar_position: Signal::new(0.),
         }
@@ -49,20 +45,23 @@ impl DerefMut for UpdateSeekBar {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-struct PlaylistsState {
-    playlists: Signal<Vec<Signal<Playlist>>>,
+#[derive(Clone, Debug)]
+struct PlaylistsContext {
+    selected: Signal<Option<(usize, Vec<Song>)>>,
+    active_indexes: Signal<Option<(usize, usize)>>,
+    playlists: Vec<Signal<Playlist>>,
 }
-impl PlaylistsState {
+
+impl PlaylistsContext {
     fn new(playlists: &[Playlist]) -> Self {
         Self {
-            playlists: Signal::new(
-                playlists
-                    .to_vec()
-                    .into_iter()
-                    .map(|playlist| Signal::new(playlist))
-                    .collect(),
-            ),
+            selected: Signal::new(None),
+            active_indexes: Signal::new(None),
+            playlists: playlists
+                .to_vec()
+                .into_iter()
+                .map(|playlist| Signal::new(playlist))
+                .collect(),
         }
     }
 }
@@ -84,13 +83,16 @@ fn PlaylistButton(props: PlaylistProp) -> Element {
         div_class += " playlist-selected";
     }
     static INVALID_PLAYLIST_ICON: Asset = asset!("/assets/icons/warning.svg");
-    let mut selected_index = use_context::<PlayerInfo>().selected_playlist_index;
+    let playlists_context = use_context::<PlaylistsContext>();
+    let mut selected = playlists_context.selected;
     let index = props.index;
     rsx! {
         button {
             class: div_class,
             onclick: move |_| {
-                selected_index.set(Some(index));
+                // TODO: handle Err
+                let songs = playlists_context.playlists[index].read().songs().ok();
+                selected.set(Some(index).zip(songs));
                 is_valid.set(props.playlist.is_valid());
             },
             p {
@@ -108,8 +110,8 @@ fn PlaylistButton(props: PlaylistProp) -> Element {
 
 #[component]
 fn PlaylistPanel() -> Element {
-    let playlists = use_context::<PlaylistsState>().playlists;
-    let selected_index = use_context::<PlayerInfo>().selected_playlist_index;
+    let playlists = use_context::<PlaylistsContext>().playlists;
+    let selected = use_context::<PlaylistsContext>().selected;
     rsx! {
         div {
             class: "playlist-panel",
@@ -127,11 +129,76 @@ fn PlaylistPanel() -> Element {
             }
             div {
                 class: "playlist-list",
-                for (i, playlist) in playlists.read().iter().enumerate() {
+                for (i, playlist) in playlists.iter().enumerate() {
                     PlaylistButton {
                         playlist: playlist.read().clone(),
                         index: i,
-                        selected: selected_index.read().is_some_and(|index| index == i),
+                        selected: selected.as_ref().is_some_and(|s| s.0 == i)
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Props)]
+struct SongComponentProps {
+    song: Song,
+    index: usize,
+    /// true if this song is the one being played, but only if the selected playlist is the one it was played from
+    is_playing: bool,
+}
+
+#[component]
+fn SongComponent(props: SongComponentProps) -> Element {
+    let mut class = "song-button".to_string();
+    let is_valid = use_signal(|| props.song.is_valid());
+    if props.is_playing {
+        class += " song-playing";
+    }
+
+    static PLAY_ICON: Asset = asset!("/assets/icons/resume.svg");
+    static INVALID_SONG_ICON: Asset = asset!("/assets/icons/warning.svg");
+    static KEBAB_ICON: Asset = asset!("/assets/icons/kebab.svg");
+
+    let duration_secs = props.song.duration().as_secs();
+    let show_hours = duration_secs > 3600;
+
+    rsx! {
+        div {
+            class: "song-component",
+            div {
+                class: "song-component-left",
+                if is_valid() {
+                    button {
+                        class: "song-play-button",
+                        img {
+                            class: "song-icon song-play-icon",
+                            src: PLAY_ICON,
+                        }
+                    }
+                } else {
+                    img {
+                        class: "song-icon song-invalid-icon",
+                        src: INVALID_SONG_ICON,
+                    }
+                }
+                p {
+                    class: "song-title",
+                    { props.song.title() }
+                }
+            },
+            div {
+                class: "song-component-right",
+                p {
+                    class: "song-duration",
+                    { format_time(props.song.duration().as_secs(), show_hours) }
+                }
+                button {
+                    class: "song-kebab-button",
+                    img {
+                        class: "kebab-icon",
+                        src: KEBAB_ICON
                     }
                 }
             }
@@ -140,8 +207,36 @@ fn PlaylistPanel() -> Element {
 }
 
 #[component]
+fn SongPanel() -> Element {
+    let playlists_context = use_context::<PlaylistsContext>();
+    let Some((selected_index, selected_songs)) = playlists_context.selected.read().clone() else {
+        return rsx! {
+            p {
+                class: "song-panel no-playlist-selected",
+                "No playlist selected."
+            }
+        };
+    };
+    let (active_playlist_index, active_song_index) =
+        playlists_context.active_indexes.read().unzip();
+    let same_playlist = active_playlist_index.is_some_and(|a_i| selected_index == a_i);
+    rsx! {
+        div {
+            class: "song-panel",
+            for (i, song) in selected_songs.iter().enumerate() {
+                SongComponent {
+                    song: song.clone(),
+                    index: i,
+                    is_playing: same_playlist && active_song_index.is_some_and(|song_index| i == song_index)
+                }
+            }
+        }
+    }
+}
+
+#[component]
 fn SeekBar() -> Element {
-    let mut player_info = use_context::<PlayerInfo>();
+    let mut player_info = use_context::<AppContext>();
     let mut player = player_info.player;
     let mut should_update = use_context::<UpdateSeekBar>();
 
@@ -191,7 +286,7 @@ fn format_time(mut seconds: u64, show_hours: bool) -> String {
 
 #[component]
 fn SongDisplay() -> Element {
-    let player = use_context::<PlayerInfo>().player;
+    let player = use_context::<AppContext>().player;
     let player_read = player.read();
     if let Some(song) = player_read.current() {
         let title = song.title();
@@ -216,7 +311,7 @@ fn SongDisplay() -> Element {
 
 #[component]
 fn CenterControls() -> Element {
-    let player_info = use_context::<PlayerInfo>();
+    let player_info = use_context::<AppContext>();
     let mut player = player_info.player;
     let mut is_paused = player_info.is_paused;
     rsx! {
@@ -266,12 +361,6 @@ fn RightControls() -> Element {
 #[component]
 fn BottomPanel() -> Element {
     rsx! {
-        div {
-            class: "content-wrapper",
-
-            PlaylistPanel { }
-        }
-
         footer {
             class: "bottom-panel",
 
@@ -298,9 +387,10 @@ pub fn Amuseing() -> Element {
     let songs = config.playlists[1].songs().unwrap();
     player.set_songs(songs);
     let player_update = player.run(config.player.buffer_size).ok();
-    let mut player_info = use_context_provider(|| PlayerInfo::new(player, player_update));
+
+    let mut player_context = use_context_provider(|| AppContext::new(player, player_update));
     let config_context = use_context_provider(|| Signal::new(config));
-    let playlists_context = use_context_provider(|| PlaylistsState::new(playlists.inner()));
+    let mut playlists_context = use_context_provider(|| PlaylistsContext::new(playlists.inner()));
     let update_seek_bar = use_context_provider(|| UpdateSeekBar(Signal::new(true)));
 
     // 100ms loop to update any component that depends on `player`
@@ -308,33 +398,33 @@ pub fn Amuseing() -> Element {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
             interval.tick().await;
-            let is_paused = player_info.player.read().is_paused();
-            player_info.is_paused.set(is_paused);
+            let is_paused = player_context.player.read().is_paused();
+            player_context.is_paused.set(is_paused);
             // Dummy write to update all components that depend on player
-            player_info.player.write();
+            player_context.player.write();
 
             if *update_seek_bar.read() {
-                let percent = if let Some(song) = player_info.player.read().current() {
+                let percent = if let Some(song) = player_context.player.read().current() {
                     let duration = song.duration().as_secs_f64();
-                    let time_playing = player_info.player.read().time_playing().as_secs_f64();
+                    let time_playing = player_context.player.read().time_playing().as_secs_f64();
                     time_playing / duration
                 } else {
                     0.
                 };
-                player_info.seek_bar_position.set(percent * 100.);
+                player_context.seek_bar_position.set(percent * 100.);
             }
-            if let Some(player_update) = player_info.player_update.as_mut() {
+            if let Some(player_update) = player_context.player_update.as_mut() {
                 for message in player_update.try_iter() {
                     match message {
                         PlayerUpdate::SongChange { song_info } => {
                             if let Some((new_song_index, _)) = song_info {
                                 if let Some((_, active_song_index)) =
-                                    player_info.active_indexes.write().as_mut()
+                                    playlists_context.active_indexes.write().as_mut()
                                 {
                                     *active_song_index = new_song_index;
                                 }
                             } else {
-                                player_info.active_indexes.set(None);
+                                playlists_context.active_indexes.set(None);
                             }
                         }
                         message => {
@@ -347,6 +437,14 @@ pub fn Amuseing() -> Element {
     });
 
     rsx! {
+        div {
+            class: "content-wrapper",
+
+            PlaylistPanel { }
+
+            SongPanel {  }
+        }
+
         BottomPanel {  }
     }
 }
